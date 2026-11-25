@@ -358,14 +358,14 @@
             <!-- Active Account Status & Post-Open NID Submission Card -->
             <div id="currentAccountCard" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3"></div>
 
-            <!-- 1-Tap Demo Role Switcher (Buyer / Seller / Rider / Unverified / Admin PIN 1234) -->
+            <!-- 1-Tap Demo Role Switcher (Buyer / Seller / Rider / Unverified / Admin PIN ) -->
             <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-2.5">
                 <div class="flex items-center justify-between gap-2">
                     <h3 class="text-xs sm:text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
                         <span>⚡</span>
                         দ্রুত রোল / অ্যাকাউন্ট সুইচার (টেস্ট করার জন্য)
                     </h3>
-                    <span class="text-[11px] text-slate-500 font-semibold">অ্যাডমিন পিন: 1234</span>
+                    <span class="text-[11px] text-slate-500 font-semibold">অ্যাডমিন</span>
                 </div>
                 <div id="demoQuickSwitcherGrid" class="grid grid-cols-2 sm:grid-cols-5 gap-2"></div>
             </div>
@@ -1426,7 +1426,7 @@
                 const parsed = JSON.parse(raw);
                 state.adminUnlocked = Boolean(parsed.adminUnlocked);
                 state.settings = { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) };
-                if (!state.settings.adminPin) state.settings.adminPin = '1234';
+                if (!state.settings.adminPin) state.settings.adminPin = '33433487';
                 if (!Number(state.settings.deliveryCharge)) state.settings.deliveryCharge = 40;
                 if (state.settings.riderDeliveryCutPct === undefined) state.settings.riderDeliveryCutPct = 10;
                 if (state.settings.sellerProductCutPct === undefined) state.settings.sellerProductCutPct = 5;
@@ -1921,9 +1921,9 @@
         function handleAdminPinSubmit(e) {
             e.preventDefault();
             const pin = document.getElementById('adminPinInput').value.trim();
-            const expectedPin = String(state.settings.adminPin || '1234');
+            const expectedPin = String(state.settings.adminPin || '33433487');
             if (pin !== expectedPin) {
-                return showToast('ভুল অ্যাডমিন পিন! (ডিফল্ট পিন: 1234)', '⛔');
+                return showToast('ভুল অ্যাডমিন পিন!', '⛔');
             }
             state.adminUnlocked = true;
             state.currentUser = {
