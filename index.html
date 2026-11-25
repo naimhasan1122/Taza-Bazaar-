@@ -381,7 +381,7 @@
                         <button type="button" onclick="toggleForgotPasswordPanel()" class="text-[11px] font-extrabold text-indigo-700 hover:text-indigo-900 underline">
                             🔑 পাসওয়ার্ড ভুলে গেছেন?
                         </button>
-                        <span class="text-[11px] font-bold text-slate-500">ডেমো: 123456</span>
+                        <span class="text-[11px] font-bold text-slate-500">ডেমো </span>
                     </div>
                 </div>
                 <form onsubmit="handleLoginSubmit(event)" class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
@@ -535,7 +535,7 @@
                 </form>
             </div>
 
-            <!-- Strictly Admin-Only Panel (Only visible after PIN 1234 unlock) -->
+            <!-- Strictly Admin-Only Panel (Only visible after PIN  unlock) -->
             <div id="inlineAdminPanelHost" class="hidden bg-slate-900 text-white p-4 sm:p-5 rounded-3xl shadow-xl border border-slate-700 space-y-4">
                 <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-3">
                     <div class="flex items-center gap-2">
@@ -575,7 +575,7 @@
 
     </main>
 
-    <!-- Admin PIN Modal (PIN: 1234) -->
+    <!-- Admin PIN Modal (PIN: ) -->
     <div id="adminPinModal" class="hidden fixed inset-0 z-[76] bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4" onclick="closeAdminPinModal()">
         <div class="bg-slate-900 text-white w-full max-w-sm rounded-3xl shadow-2xl border border-amber-400/40 overflow-hidden animate-slide-up" onclick="event.stopPropagation()">
             <div class="px-5 py-3.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
@@ -587,9 +587,9 @@
             </div>
             <form onsubmit="handleAdminPinSubmit(event)" class="p-5 space-y-3">
                 <p class="text-xs text-slate-300 leading-relaxed">
-                    অ্যাডমিন প্যানেল শুধুমাত্র পিন দিয়ে আনলক হবে (ডিফল্ট পিন: <strong class="text-amber-300 font-mono">1234</strong>)।
+                    অ্যাডমিন প্যানেল শুধুমাত্র পিন দিয়ে আনলক হবে ।
                 </p>
-                <input type="password" id="adminPinInput" inputmode="numeric" required placeholder="অ্যাডমিন পিন লিখুন (1234)" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm font-mono font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-400">
+                <input type="password" id="adminPinInput" inputmode="numeric" required placeholder="অ্যাডমিন পিন লিখুন" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm font-mono font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-400">
                 <button type="submit" class="w-full py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-xl text-xs sm:text-sm shadow">
                     অ্যাডমিন প্যানেল আনলক করুন
                 </button>
@@ -1055,7 +1055,7 @@
         };
 
         const DEFAULT_SETTINGS = {
-            adminPin: '1234',
+            adminPin: '33433487',
             deliveryCharge: 40,
             riderDeliveryCutPct: 10,
             sellerProductCutPct: 5,
