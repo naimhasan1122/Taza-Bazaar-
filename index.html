@@ -6000,6 +6000,61 @@
     alert("✅ পাসওয়ার্ড সঠিক। রোল: " + roleKey);
     return true;
 }
+window.addEventListener("click", function (e) {
+    const target = e.target.closest("button, a, [role='button'], div, span");
+    if (!target) return;
+
+    // এনআইডি সংক্রান্ত বাটন বা সেকশন হলে আটকাবে না
+    const fullText = (target.innerText || target.textContent || "").trim().toLowerCase();
+    const attrs = (
+        (target.getAttribute("onclick") || "") + " " +
+        (target.getAttribute("data-role") || "") + " " +
+        (target.id || "")
+    ).toLowerCase();
+
+    if (
+        fullText.includes("এনআইডি বাকি") ||
+        fullText.includes("এনআইডি কার্ড") ||
+        fullText.includes("nid") ||
+        attrs.includes("nid")
+    ) {
+        return;
+    }
+
+    // শুধু দ্রুত রোল সুইচারের বাটনগুলো ধরার জন্য
+    const isRoleBtn =
+        fullText === "ক্রেতা" || fullText.startsWith("ক্রেতা") || attrs.includes("buyer") ||
+        fullText === "বিক্রেতা" || fullText.startsWith("বিক্রেতা") || attrs.includes("seller") ||
+        fullText === "রাইডার" || fullText.startsWith("রাইডার") || attrs.includes("rider") ||
+        fullText === "অ্যাডমিন" || fullText.startsWith("অ্যাডমিন") || attrs.includes("admin");
+
+    if (!isRoleBtn) return;
+
+    // ইতিমধ্যে এই ক্লিকে পাসওয়ার্ড চেক হয়ে থাকলে আবার চাইবে না
+    if (target.dataset.passVerified === "1") {
+        target.dataset.passVerified = "0";
+        return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === "function") {
+        e.stopImmediatePropagation();
+    }
+
+    const pin = prompt("🔒 শুধুমাত্র অ্যাডমিনের জন্য!\nপাসওয়ার্ড দিন:");
+    if (pin === null) return false;
+
+    if (pin.trim() !== "33433487") {
+        alert("❌ ভুল পাসওয়ার্ড! প্রবেশাধিকার সংরক্ষিত।");
+        return false;
+    }
+
+    target.dataset.passVerified = "1";
+    setTimeout(function () {
+        target.click();
+    }, 10);
+}, true);
 </script>
 </body>
 </html>
