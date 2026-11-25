@@ -353,24 +353,23 @@
             </div>
         </section>
 
-        <!-- TAB 5: 👤 অ্যাকাউন্ট -->
-        <section id="tab-account" class="hidden space-y-4 animate-slide-up">
-            <!-- Active Account Status & Post-Open NID Submission Card -->
-            <div id="currentAccountCard" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3"></div>
-
-<div onclick="checkAdminAccess()" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 space-y-2.5 cursor-pointer group relative">
-    <!-- এই অংশটি ক্লিক করলে পাসওয়ার্ড চাইবে -->
-    <div id="lockedOverlay" class="absolute inset-0 bg-white/90 backdrop-blur-sm flex flex-col items-center justify-center rounded-2xl z-10">
-        <span class="text-3xl mb-2">🔒</span>
-        <span class="text-amber-600 font-semibold text-center px-2">শুধুমাত্র অ্যাডমিনের জন্য (ক্লিক করে পাসওয়ার্ড দিন)</span>
-    </div>
-    
-    <div class="flex items-center justify-between gap-2 opacity-50"> <!-- লক অবস্থায় কিছুটা ঝাপসা দেখাবে -->
-        <h3 class="text-xs sm:text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
-            <span>⚡</span>
-            দ্রুত রোল / অ্যাকাউন্ট সুইচার (টেস্ট করার জন্য)
+     <!-- TAB 5: 👤 অ্যাকাউন্ট (এনআইডি জমা ও ভেরিফিকেশন) -->
+<section id="tab-account" class="block">
+    <div id="currentAccountCard" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 space-y-3">
+        <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+            <span>🆔</span>
+            এনআইডি ভেরিফিকেশন (NID Card Submission)
         </h3>
+        <div class="flex items-center gap-2">
+            <input type="text" id="nidNumber" name="nidNumber" placeholder="আপনার এনআইডি নম্বরটি এখানে লিখুন" 
+                   class="w-full p-2.5 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-300 focus:border-amber-400" required>
+            <button onclick="submitNid()" class="bg-amber-500 text-white px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-amber-600 transition shrink-0">
+                জমা দিন
+            </button>
+        </div>
+        <p class="text-[11px] text-slate-500">ভেরিফিকেশনের জন্য আপনার সঠিক এনআইডি নম্বরটি টাইপ করে 'জমা দিন' বাটনে ক্লিক করুন।</p>
     </div>
+</section>
     
     <div id="demoQuickSwitcherGrid" class="grid grid-cols-2 sm:grid-cols-5 gap-2 hidden"> <!-- লক অবস্থায় বাটনগুলো hidden থাকবে -->
         <!-- বাটনগুলো এখানে থাকবে, কিন্তু এই পুরো div-টি এখন ক্লিকযোগ্য নয় -->
