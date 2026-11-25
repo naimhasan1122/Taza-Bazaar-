@@ -119,7 +119,7 @@
             </div>
 
             <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
-                <!-- Admin Panel Button (Visible Admin Password") -->
+                <!-- Admin Panel Button (Visible ONLY when unlocked with PIN) -->
                 <button type="button" id="topAdminPanelBtn" onclick="openAdminPanelModal()" class="hidden relative items-center gap-1 bg-amber-400 hover:bg-amber-300 text-slate-950 active:scale-95 transition px-2.5 py-1.5 rounded-full border border-amber-200 text-xs sm:text-sm font-extrabold shadow-md">
                     <span>🛡️</span>
                     <span class="hidden sm:inline">অ্যাডমিন প্যানেল</span>
@@ -353,24 +353,22 @@
             </div>
         </section>
 
-<!-- 🔒 Admin-only Quick Role / Account Switcher -->
-<div id="demoQuickSwitcherCard" onclick="checkAdminAccess()" class="relative bg-white p-4 rounded-2xl shadow-sm border border-amber-200 cursor-pointer select-none space-y-3">
-    <div id="lockedOverlay" class="absolute inset-0 bg-white/85 backdrop-blur-[1px] rounded-2xl flex flex-col items-center justify-center z-10">
-        <span class="text-3xl mb-1">🔒</span>
-        <span class="text-xs font-bold text-amber-700">শুধুমাত্র অ্যাডমিন — পাসওয়ার্ড দিয়ে খুলুন</span>
-    </div>
+        <!-- TAB 5: 👤 অ্যাকাউন্ট -->
+        <section id="tab-account" class="hidden space-y-4 animate-slide-up">
+            <!-- Active Account Status & Post-Open NID Submission Card -->
+            <div id="currentAccountCard" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3"></div>
 
-    <div class="flex items-center justify-between">
-        <h3 class="text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
-            <span>⚡</span>
-            দ্রুত রোল / অ্যাকাউন্ট সুইচার
-        </h3>
-    </div>
-
-    <div id="demoQuickSwitcherGrid" class="grid grid-cols-2 gap-2">
-        <button type="button" data-role="buyer" class="p-2 rounded-xl border text-xs font-bold">ক্রেতা</button>
-       
-    
+            <!-- 1-Tap Demo Role Switcher (Buyer / Seller / Rider / Unverified / Admin PIN ) -->
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-2.5">
+                <div class="flex items-center justify-between gap-2">
+                    <h3 class="text-xs sm:text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
+                        <span>⚡</span>
+                        দ্রুত রোল / অ্যাকাউন্ট সুইচার (টেস্ট করার জন্য)
+                    </h3>
+                    <span class="text-[11px] text-slate-500 font-semibold">অ্যাডমিন পিন: </span>
+                </div>
+                <div id="demoQuickSwitcherGrid" class="grid grid-cols-2 sm:grid-cols-5 gap-2"></div>
+            </div>
 
             <!-- Login Box (Mobile Number + Password + Forgot Password + 3-Strike Reset Request) -->
             <div class="bg-white p-4 rounded-2xl shadow-sm border border-emerald-200 space-y-3">
@@ -383,7 +381,7 @@
                         <button type="button" onclick="toggleForgotPasswordPanel()" class="text-[11px] font-extrabold text-indigo-700 hover:text-indigo-900 underline">
                             🔑 পাসওয়ার্ড ভুলে গেছেন?
                         </button>
-                        <span class="text-[11px] font-bold text-slate-500">ডেমো </span>
+                        <span class="text-[11px] font-bold text-slate-500">ডেমো: 123456</span>
                     </div>
                 </div>
                 <form onsubmit="handleLoginSubmit(event)" class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
@@ -537,7 +535,7 @@
                 </form>
             </div>
 
-            <!-- Strictly Admin-Only Panel (Only visible after PIN  unlock) -->
+            <!-- Strictly Admin-Only Panel (Only visible after PIN ) -->
             <div id="inlineAdminPanelHost" class="hidden bg-slate-900 text-white p-4 sm:p-5 rounded-3xl shadow-xl border border-slate-700 space-y-4">
                 <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-3">
                     <div class="flex items-center gap-2">
@@ -577,7 +575,7 @@
 
     </main>
 
-    <!-- Admin PIN Modal (PIN: ) -->
+    <!-- Admin PIN Modal -->
     <div id="adminPinModal" class="hidden fixed inset-0 z-[76] bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4" onclick="closeAdminPinModal()">
         <div class="bg-slate-900 text-white w-full max-w-sm rounded-3xl shadow-2xl border border-amber-400/40 overflow-hidden animate-slide-up" onclick="event.stopPropagation()">
             <div class="px-5 py-3.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
@@ -589,9 +587,9 @@
             </div>
             <form onsubmit="handleAdminPinSubmit(event)" class="p-5 space-y-3">
                 <p class="text-xs text-slate-300 leading-relaxed">
-                    অ্যাডমিন প্যানেল শুধুমাত্র পিন দিয়ে আনলক হবে ।
+                    অ্যাডমিন প্যানেল শুধুমাত্র পিন দিয়ে আনলক হবে (ডিফল্ট পিন: <strong class="text-amber-300 font-mono"> </strong>)।
                 </p>
-                <input type="password" id="adminPinInput" inputmode="numeric" required placeholder="অ্যাডমিন পিন লিখুন" class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm font-mono font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-400">
+                <input type="password" id="adminPinInput" inputmode="numeric" required placeholder="অ্যাডমিন পিন লিখুন " class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm font-mono font-bold text-white focus:outline-none focus:ring-2 focus:ring-amber-400">
                 <button type="submit" class="w-full py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-xl text-xs sm:text-sm shadow">
                     অ্যাডমিন প্যানেল আনলক করুন
                 </button>
@@ -1925,7 +1923,7 @@
             const pin = document.getElementById('adminPinInput').value.trim();
             const expectedPin = String(state.settings.adminPin || '33433487');
             if (pin !== expectedPin) {
-                return showToast('ভুল অ্যাডমিন পিন!', '⛔');
+                return showToast('ভুল অ্যাডমিন পিন! (ডিফল্ট পিন:)', '⛔');
             }
             state.adminUnlocked = true;
             state.currentUser = {
@@ -5798,7 +5796,9 @@
             syncAllUI();
             startBackgroundTimers();
         });
-(function attachFirebaseLiveHook() {
+    </script>
+     <script> 
+    (function attachFirebaseLiveHook() {
     const LOCAL_BACKUP_KEY = "ebazar_full_app_backup_v1";
 
     function collectAppStateSnapshot() {
@@ -5940,153 +5940,6 @@
         });
     });
 })();
-    (function enableDirectOrdersAndLiveCommunicationSync() {
-    const hook = window.fbHook;
-    if (!hook || !hook.db || !hook.fs) return;
-
-    const syncedOrderIds = new Set();
-    const syncedMsgIds = new Set();
-
-    async function syncIndividualOrdersToFirestore() {
-        if (hook.applyingRemote || typeof state === "undefined" || !Array.isArray(state.orders)) return;
-        for (const ord of state.orders) {
-            if (!ord || !ord.id) continue;
-            const fingerprint = `${ord.id}_${ord.status || ""}_${ord.riderStage || ""}_${ord.refunded ? 1 : 0}_${(ord.chatMessages || []).length}`;
-            if (syncedOrderIds.has(fingerprint)) continue;
-            syncedOrderIds.add(fingerprint);
-
-            try {
-                const orderDocRef = hook.fs.doc(hook.db, "orders", String(ord.id));
-                await hook.fs.setDoc(orderDocRef, {
-                    orderId: ord.id,
-                    buyerName: ord.buyerName || "",
-                    buyerPhone: ord.buyerPhone || "",
-                    buyerAddress: ord.buyerAddress || "",
-                    targetSellerName: ord.targetSellerName || "",
-                    riderName: ord.riderName || "",
-                    totalAmount: Number(ord.totalAmount || 0),
-                    paidAmount: Number(ord.paidAmount || 0),
-                    dueAtDelivery: Number(ord.dueAtDelivery || 0),
-                    status: ord.status || "pending",
-                    createdAtText: ord.createdAt || "",
-                    itemsSummary: (ord.items || []).map(i => `${i.name} x${i.qty}`).join(", "),
-                    chatMessages: ord.chatMessages || [],
-                    updatedAt: Date.now()
-                }, { merge: true });
-            } catch (e) {
-                console.warn("Order doc sync warning:", e);
-            }
-        }
-    }
-
-    async function syncOrderChatsToLiveCommCollection() {
-        if (hook.applyingRemote || typeof state === "undefined" || !Array.isArray(state.orders)) return;
-        for (const ord of state.orders) {
-            if (!ord || !Array.isArray(ord.chatMessages)) continue;
-            for (const msg of ord.chatMessages) {
-                if (!msg || !msg.id || syncedMsgIds.has(msg.id)) continue;
-                syncedMsgIds.add(msg.id);
-                try {
-                    const commDocRef = hook.fs.doc(hook.db, "live_communications", String(msg.id));
-                    await hook.fs.setDoc(commDocRef, {
-                        ...msg,
-                        orderId: ord.id,
-                        buyerName: ord.buyerName || "",
-                        sellerName: ord.targetSellerName || "",
-                        riderName: ord.riderName || "",
-                        syncedAt: Date.now()
-                    }, { merge: true });
-                } catch (e) {
-                    console.warn("Comm doc sync warning:", e);
-                }
-            }
-        }
-    }
-
-    const prevSaveState = window.saveState;
-    if (typeof prevSaveState === "function") {
-        window.saveState = function (skipCloud = false) {
-            prevSaveState(skipCloud);
-            if (!skipCloud && !hook.applyingRemote) {
-                syncIndividualOrdersToFirestore();
-                syncOrderChatsToLiveCommCollection();
-            }
-        };
-    }
-
-    // রিয়েল-টাইমে 'orders' কালেকশন থেকে নতুন অর্ডার বা আপডেট আসলে অ্যাপে টেনে আনা
-    try {
-        const ordersColRef = hook.fs.collection(hook.db, "orders");
-        hook.fs.onSnapshot(ordersColRef, (snap) => {
-            if (typeof state === "undefined" || !Array.isArray(state.orders)) return;
-            let changed = false;
-            snap.docChanges().forEach((change) => {
-                const remoteOrd = change.doc.data();
-                if (!remoteOrd || !remoteOrd.orderId) return;
-                const idx = state.orders.findIndex(o => o.id === remoteOrd.orderId);
-                if (idx === -1 && remoteOrd.items) {
-                    hook.applyingRemote = true;
-                    state.orders.unshift(remoteOrd);
-                    hook.applyingRemote = false;
-                    changed = true;
-                } else if (idx !== -1 && Array.isArray(remoteOrd.chatMessages)) {
-                    const localOrd = state.orders[idx];
-                    const localMsgs = Array.isArray(localOrd.chatMessages) ? localOrd.chatMessages : [];
-                    if (remoteOrd.chatMessages.length > localMsgs.length) {
-                        hook.applyingRemote = true;
-                        localOrd.chatMessages = remoteOrd.chatMessages;
-                        hook.applyingRemote = false;
-                        changed = true;
-                        if (state.activeChatOrderId === localOrd.id && typeof renderOrderChatMessages === "function") {
-                            renderOrderChatMessages(localOrd);
-                        }
-                    }
-                }
-            });
-            if (changed && typeof syncAllUI === "function") {
-                syncAllUI();
-            }
-        });
-    } catch (e) {
-        console.warn("Orders collection listener warning:", e);
-    }
-
-    window.addEventListener("DOMContentLoaded", () => {
-        setTimeout(() => {
-            syncIndividualOrdersToFirestore();
-            syncOrderChatsToLiveCommCollection();
-        }, 600);
-    });
-})();
-function checkAdminAccess() {
-    // আপনার গোপন পিন (কোডে কেউ দেখতে পারবে না)
-    const adminPassword = "33433487"; 
-    
-    // লক খুলে যাওয়ার পপআপ বা প্রম্পট
-    let enteredPin = prompt("🔐 শুধুমাত্র অ্যাডমিনের জন্য! অনুগ্রহ করে পাসওয়ার্ড দিন:");
-
-    if (enteredPin === null) return; // Cancel করলে পপআপ কেটে যাবে
-
-    if (enteredPin === adminPassword) {
-        alert("✅ সঠিক পাসওয়ার্ড! বক্সটি আনলক করা হয়েছে।");
-        
-        // লক করার ঝাপসা পর্দাটি (Overlay) সরিয়ে দিন
-        const overlay = document.getElementById('lockedOverlay');
-        if (overlay) overlay.style.display = 'none';
-        
-        // বাটনগুলো দৃশ্যমান করুন
-        const grid = document.getElementById('demoQuickSwitcherGrid');
-        if (grid) grid.classList.remove('hidden');
-        
-        // বক্সের অস্বচ্ছ ভাব স্বাভাবিক করুন
-        const card = document.getElementById('demoQuickSwitcherCard');
-        if (card) card.style.opacity = '1';
-        
-    } else {
-        alert("❌ ভুল পাসওয়ার্ড! প্রবেশাধিকার সংরক্ষিত।");
-    }
-}
-
-</script>
+    </script>
 </body>
 </html>
