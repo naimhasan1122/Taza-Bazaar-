@@ -5970,86 +5970,36 @@
     });
 })();
    <script>
-   (function () {
-    const DEMO_PASS = "33433487";
-    const DEMO_ROLES = ["buyer", "seller", "rider"];
+  function openLockedDemoRole(roleKey) {
+    const pin = prompt("🔒 শুধুমাত্র অ্যাডমিনের জন্য!\nপাসওয়ার্ড দিন:");
+    if (pin === null) return false;
 
-    function askDemoPass() {
-        const entered = prompt("🔒 শুধুমাত্র অ্যাডমিনের জন্য!\nপাসওয়ার্ড দিন:");
-        if (entered === null) return false;
-        if (entered.trim() !== DEMO_PASS) {
-            alert("❌ ভুল পাসওয়ার্ড! প্রবেশাধিকার সংরক্ষিত।");
-            return false;
+    if (pin.trim() !== _ADMIN_ACCESS_KEY) {
+        alert("❌ ভুল পাসওয়ার্ড! প্রবেশাধিকার সংরক্ষিত।");
+        return false;
+    }
+
+    const fnNames = [
+        "switchDemoRole",
+        "selectRole",
+        "setDemoRole",
+        "setRole",
+        "enterDemoRole",
+        "applyRole",
+        "switchRole"
+    ];
+
+    for (let i = 0; i < fnNames.length; i++) {
+        const name = fnNames[i];
+        if (typeof window[name] === "function") {
+            window[name](roleKey);
+            return true;
         }
-        return true;
     }
 
-    function guardDemoButtons() {
-        const grid = document.getElementById("demoQuickSwitcherGrid");
-        if (!grid) return;
-
-        const items = grid.querySelectorAll("button, [role='button'], a, div");
-        items.forEach((el) => {
-            if (el.dataset.demoGuarded === "1") return;
-
-            const raw = ((el.getAttribute("data-role") || "") + " " + (el.getAttribute("onclick") || "") + " " + (el.textContent || "")).toLowerCase();
-
-            // এনআইডি বাকি উন্মুক্ত থাকবে
-            if (raw.includes("এনআইডি বাকি") || raw.includes("nid")) {
-                el.dataset.demoGuarded = "1";
-                return;
-            }
-
-            // অ্যাডমিনে হাত দেওয়া হবে না (আগে থেকেই লকড)
-            if (raw.includes("অ্যাডমিন") || raw.includes("admin")) {
-                el.dataset.demoGuarded = "1";
-                return;
-            }
-
-            const matchedRole =
-                (raw.includes("buyer") || raw.includes("ক্রেতা")) ? "buyer" :
-                (raw.includes("seller") || raw.includes("বিক্রেতা")) ? "seller" :
-                (raw.includes("rider") || raw.includes("রাইডার")) ? "rider" : "";
-
-            if (!matchedRole) return;
-
-            el.dataset.demoGuarded = "1";
-
-            // আগে থেকে কোনো inline onclick থাকলে সেটি সরিয়ে সুরক্ষিতভাবে চালানো হবে
-            const oldOnclick = el.onclick;
-            const attrOnclick = el.getAttribute("onclick");
-            if (attrOnclick) el.removeAttribute("onclick");
-
-            el.onclick = function (ev) {
-                ev.preventDefault();
-                ev.stopPropagation();
-                if (typeof ev.stopImmediatePropagation === "function") {
-                    ev.stopImmediatePropagation();
-                }
-
-                if (!askDemoPass()) return false;
-
-                if (typeof oldOnclick === "function") {
-                    return oldOnclick.call(this, ev);
-                }
-                if (typeof switchDemoRole === "function") {
-                    switchDemoRole(matchedRole);
-                } else if (typeof selectRole === "function") {
-                    selectRole(matchedRole);
-                }
-            };
-        });
-    }
-
-    // পেজ লোড হওয়ার পর এবং ডাইনামিক রেন্ডারের পরও যেন বাটনগুলো লক থাকে
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", guardDemoButtons);
-    } else {
-        guardDemoButtons();
-    }
-    window.addEventListener("load", guardDemoButtons);
-    setInterval(guardDemoButtons, 800);
-})();
+    alert("✅ পাসওয়ার্ড সঠিক। রোল: " + roleKey);
+    return true;
+}
 </script>
 </body>
 </html>
