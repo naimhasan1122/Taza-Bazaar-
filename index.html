@@ -5827,57 +5827,65 @@
         });
     </script>
      <script> 
-function openLockedDemoRole(roleKey) {
-    const pin = prompt("🔒 শুধুমাত্র অ্যাডমিনের জন্য!\nপাসওয়ার্ড দিন:");
-    if (pin === null) return false;
+(function () {
+    const KEY = "33433487";
 
-    if (pin.trim() !== "33433487") {
-        alert("❌ ভুল পাসওয়ার্ড! প্রবেশাধিকার সংরক্ষিত।");
-        return false;
-    }
-
-    const validRoles = ["buyer", "seller", "rider"];
-    const cleanRole = validRoles.includes(roleKey) ? roleKey : "buyer";
-
-    try {
-        localStorage.setItem("demoRole", cleanRole);
-        localStorage.setItem("activeRole", cleanRole);
-        localStorage.setItem("userRole", cleanRole);
-    } catch (e) {}
-
-    window.currentDemoRole = cleanRole;
-    window.activeRole = cleanRole;
-
-    const fnCandidates = [
-        "switchDemoRole",
-        "selectRole",
-        "setDemoRole",
-        "setRole",
-        "enterDemoRole",
-        "applyRole",
-        "switchRole",
-        "renderAccountTab",
-        "renderDemoGrid",
-        "updateUI"
-    ];
-
-    let calledAny = false;
-    for (let i = 0; i < fnCandidates.length; i++) {
-        const fnName = fnCandidates[i];
-        if (typeof window[fnName] === "function") {
-            try {
-                window[fnName](cleanRole);
-                calledAny = true;
-            } catch (err) {}
+    function askKey() {
+        const p = prompt("🔒 শুধুমাত্র অ্যাডমিনের জন্য!\nপাসওয়ার্ড দিন:");
+        if (p === null) return false;
+        if (p.trim() !== KEY) {
+            alert("❌ ভুল পাসওয়ার্ড!");
+            return false;
         }
+        return true;
     }
 
-    if (!calledAny) {
-        alert("✅ পাসওয়ার্ড সঠিক! রোল সেট হয়েছে: " + cleanRole);
-    }
+    const origOpenLockedDemoRole = window.openLockedDemoRole;
+    window.openLockedDemoRole = function (roleKey) {
+        if (!askKey()) return false;
+        if (typeof origOpenLockedDemoRole === "function") {
+            return origOpenLockedDemoRole.apply(this, arguments);
+        }
+    };
 
-    return true;
-}
+    document.addEventListener("click", function (e) {
+        const box = e.target.closest("#demoQuickSwitcherGrid");
+        if (!box) return;
+
+        const btn = e.target.closest("button, [role='button'], div, a, span");
+        if (!btn) return;
+
+        const txt = ((btn.innerText || btn.textContent || "") + " " + (btn.getAttribute("onclick") || "") + " " + (btn.getAttribute("data-role") || "")).toLowerCase();
+
+        if (txt.includes("এনআইডি") || txt.includes("nid")) return;
+        if (txt.includes("অ্যাডমিন") || txt.includes("admin")) return;
+
+        const isTargetDemo =
+            txt.includes("ক্রেতা") || txt.includes("buyer") ||
+            txt.includes("বিক্রেতা") || txt.includes("seller") ||
+            txt.includes("রাইডার") || txt.includes("rider");
+
+        if (!isTargetDemo) return;
+
+        if (btn.dataset.unlockedOnce === "1") {
+            btn.dataset.unlockedOnce = "0";
+            return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === "function") {
+            e.stopImmediatePropagation();
+        }
+
+        if (!askKey()) return false;
+
+        btn.dataset.unlockedOnce = "1";
+        setTimeout(function () {
+            btn.click();
+        }, 15);
+    }, true);
+})();
 </script>
 </body>
 </html>
