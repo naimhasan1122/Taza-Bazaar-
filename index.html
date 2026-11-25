@@ -5827,221 +5827,7 @@
         });
     </script>
      <script> 
-    (function attachFirebaseLiveHook() {
-    const LOCAL_BACKUP_KEY = "ebazar_full_app_backup_v1";
-
-    function collectAppStateSnapshot() {
-        if (typeof state === "undefined") return {};
-        return {
-            accounts: state.accounts || [],
-            products: state.products || [],
-            ads: state.ads || [],
-            orders: state.orders || [],
-            riderDeposits: state.riderDeposits || [],
-            packageRequests: state.packageRequests || [],
-            registrationRequests: state.registrationRequests || [],
-            withdrawalRequests: state.withdrawalRequests || [],
-            passwordResetRequests: state.passwordResetRequests || [],
-            history: state.history || [],
-            notifications: state.notifications || [],
-            settings: state.settings || {},
-            admobImpressions: Number(state.admobImpressions || 0)
-        };
-    }
-
-    function applyFirebaseSnapshot(remoteObj) {
-        if (!remoteObj || typeof remoteObj !== "object" || typeof state === "undefined") return;
-        const hook = window.fbHook;
-        if (hook) hook.applyingRemote = true;
-
-        try {
-            if (Array.isArray(remoteObj.accounts)) {
-                state.accounts = remoteObj.accounts;
-                if (state.currentUser && state.currentUser.role !== "admin") {
-                    const me = state.accounts.find(a => a.id === state.currentUser.id);
-                    if (me) state.currentUser = JSON.parse(JSON.stringify(me));
-                }
-            }
-            if (Array.isArray(remoteObj.products)) state.products = remoteObj.products;
-            if (Array.isArray(remoteObj.ads)) state.ads = remoteObj.ads;
-            if (Array.isArray(remoteObj.orders)) {
-                state.orders = typeof normalizeOrderWorkflowFields === "function"
-                    ? remoteObj.orders.map(normalizeOrderWorkflowFields)
-                    : remoteObj.orders;
-            }
-            if (Array.isArray(remoteObj.riderDeposits)) state.riderDeposits = remoteObj.riderDeposits;
-            if (Array.isArray(remoteObj.packageRequests)) state.packageRequests = remoteObj.packageRequests;
-            if (Array.isArray(remoteObj.registrationRequests)) state.registrationRequests = remoteObj.registrationRequests;
-            if (Array.isArray(remoteObj.withdrawalRequests)) state.withdrawalRequests = remoteObj.withdrawalRequests;
-            if (Array.isArray(remoteObj.passwordResetRequests)) state.passwordResetRequests = remoteObj.passwordResetRequests;
-            if (Array.isArray(remoteObj.history)) state.history = remoteObj.history;
-            if (Array.isArray(remoteObj.notifications)) state.notifications = remoteObj.notifications;
-            if (remoteObj.settings && typeof remoteObj.settings === "object") {
-                state.settings = { ...state.settings, ...remoteObj.settings };
-            }
-            if (remoteObj.admobImpressions !== undefined) {
-                state.admobImpressions = Number(remoteObj.admobImpressions || 0);
-            }
-
-            localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({
-                currentUser: state.currentUser,
-                adminUnlocked: state.adminUnlocked,
-                cart: state.cart || [],
-                ...collectAppStateSnapshot()
-            }));
-        } finally {
-            if (hook) hook.applyingRemote = false;
-        }
-    }
-
-    async function pushSnapshotToFirebase() {
-        const hook = window.fbHook;
-        if (!hook || hook.applyingRemote || typeof state === "undefined") return;
-        const statusEl = document.getElementById("fbSyncStatusText");
-        try {
-            const ref = hook.fs.doc(hook.db, hook.colName, hook.docId);
-            await hook.fs.setDoc(ref, {
-                updatedAt: Date.now(),
-                payload: JSON.stringify(collectAppStateSnapshot())
-            }, { merge: true });
-            if (statusEl) statusEl.textContent = "Firebase লাইভ সিঙ্ক ●";
-        } catch (err) {
-            if (statusEl) statusEl.textContent = "লোকাল স্টোরেজ সক্রিয়";
-        }
-    }
-
-    if (typeof window.saveState === "function") {
-        const originalSaveState = window.saveState;
-        window.saveState = function (skipCloud = false) {
-            originalSaveState(true);
-            try {
-                if (typeof state !== "undefined") {
-                    localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({
-                        currentUser: state.currentUser,
-                        adminUnlocked: state.adminUnlocked,
-                        cart: state.cart || [],
-                        ...collectAppStateSnapshot()
-                    }));
-                }
-            } catch (e) {}
-
-            if (!skipCloud && window.fbHook && !window.fbHook.applyingRemote) {
-                clearTimeout(window.fbHook.timer);
-                window.fbHook.timer = setTimeout(pushSnapshotToFirebase, 150);
-            }
-        };
-    }
-
-    window.addEventListener("DOMContentLoaded", () => {
-        try {
-            const savedRaw = localStorage.getItem(LOCAL_BACKUP_KEY);
-            if (savedRaw && typeof state !== "undefined") {
-                const parsed = JSON.parse(savedRaw);
-                if (parsed.currentUser) state.currentUser = parsed.currentUser;
-                if (parsed.adminUnlocked !== undefined) state.adminUnlocked = Boolean(parsed.adminUnlocked);
-                if (Array.isArray(parsed.cart)) state.cart = parsed.cart;
-                applyFirebaseSnapshot(parsed);
-                if (typeof syncAllUI === "function") syncAllUI();
-            }
-        } catch (e) {}
-
-        const hook = window.fbHook;
-        if (!hook) return;
-        const ref = hook.fs.doc(hook.db, hook.colName, hook.docId);
-        hook.fs.onSnapshot(ref, (snap) => {
-            if (!snap.exists()) {
-                pushSnapshotToFirebase();
-                return;
-            }
-            const docData = snap.data();
-            if (!docData || !docData.payload) return;
-            try {
-                const parsedRemote = JSON.parse(docData.payload);
-                applyFirebaseSnapshot(parsedRemote);
-                const statusEl = document.getElementById("fbSyncStatusText");
-                if (statusEl) statusEl.textContent = "Firebase লাইভ সিঙ্ক ●";
-                if (typeof syncAllUI === "function") syncAllUI();
-                if (typeof state !== "undefined" && state.activeChatOrderId && typeof renderOrderChatMessages === "function") {
-                    const ord = state.orders.find(o => o.id === state.activeChatOrderId);
-                    if (ord) renderOrderChatMessages(ord);
-                }
-            } catch (e) {}
-        });
-    });
-})();
-   <script>
-  function openLockedDemoRole(roleKey) {
-    const pin = prompt("🔒 শুধুমাত্র অ্যাডমিনের জন্য!\nপাসওয়ার্ড দিন:");
-    if (pin === null) return false;
-
-    if (pin.trim() !== _ADMIN_ACCESS_KEY) {
-        alert("❌ ভুল পাসওয়ার্ড! প্রবেশাধিকার সংরক্ষিত।");
-        return false;
-    }
-
-    const fnNames = [
-        "switchDemoRole",
-        "selectRole",
-        "setDemoRole",
-        "setRole",
-        "enterDemoRole",
-        "applyRole",
-        "switchRole"
-    ];
-
-    for (let i = 0; i < fnNames.length; i++) {
-        const name = fnNames[i];
-        if (typeof window[name] === "function") {
-            window[name](roleKey);
-            return true;
-        }
-    }
-
-    alert("✅ পাসওয়ার্ড সঠিক। রোল: " + roleKey);
-    return true;
-}
-window.addEventListener("click", function (e) {
-    const target = e.target.closest("button, a, [role='button'], div, span");
-    if (!target) return;
-
-    // এনআইডি সংক্রান্ত বাটন বা সেকশন হলে আটকাবে না
-    const fullText = (target.innerText || target.textContent || "").trim().toLowerCase();
-    const attrs = (
-        (target.getAttribute("onclick") || "") + " " +
-        (target.getAttribute("data-role") || "") + " " +
-        (target.id || "")
-    ).toLowerCase();
-
-    if (
-        fullText.includes("এনআইডি বাকি") ||
-        fullText.includes("এনআইডি কার্ড") ||
-        fullText.includes("nid") ||
-        attrs.includes("nid")
-    ) {
-        return;
-    }
-
-    // শুধু দ্রুত রোল সুইচারের বাটনগুলো ধরার জন্য
-    const isRoleBtn =
-        fullText === "ক্রেতা" || fullText.startsWith("ক্রেতা") || attrs.includes("buyer") ||
-        fullText === "বিক্রেতা" || fullText.startsWith("বিক্রেতা") || attrs.includes("seller") ||
-        fullText === "রাইডার" || fullText.startsWith("রাইডার") || attrs.includes("rider") ||
-        fullText === "অ্যাডমিন" || fullText.startsWith("অ্যাডমিন") || attrs.includes("admin");
-
-    if (!isRoleBtn) return;
-
-    // ইতিমধ্যে এই ক্লিকে পাসওয়ার্ড চেক হয়ে থাকলে আবার চাইবে না
-    if (target.dataset.passVerified === "1") {
-        target.dataset.passVerified = "0";
-        return;
-    }
-
-    e.preventDefault();
-    e.stopPropagation();
-    if (typeof e.stopImmediatePropagation === "function") {
-        e.stopImmediatePropagation();
-    }
-
+function openLockedDemoRole(roleKey) {
     const pin = prompt("🔒 শুধুমাত্র অ্যাডমিনের জন্য!\nপাসওয়ার্ড দিন:");
     if (pin === null) return false;
 
@@ -6050,11 +5836,48 @@ window.addEventListener("click", function (e) {
         return false;
     }
 
-    target.dataset.passVerified = "1";
-    setTimeout(function () {
-        target.click();
-    }, 10);
-}, true);
+    const validRoles = ["buyer", "seller", "rider"];
+    const cleanRole = validRoles.includes(roleKey) ? roleKey : "buyer";
+
+    try {
+        localStorage.setItem("demoRole", cleanRole);
+        localStorage.setItem("activeRole", cleanRole);
+        localStorage.setItem("userRole", cleanRole);
+    } catch (e) {}
+
+    window.currentDemoRole = cleanRole;
+    window.activeRole = cleanRole;
+
+    const fnCandidates = [
+        "switchDemoRole",
+        "selectRole",
+        "setDemoRole",
+        "setRole",
+        "enterDemoRole",
+        "applyRole",
+        "switchRole",
+        "renderAccountTab",
+        "renderDemoGrid",
+        "updateUI"
+    ];
+
+    let calledAny = false;
+    for (let i = 0; i < fnCandidates.length; i++) {
+        const fnName = fnCandidates[i];
+        if (typeof window[fnName] === "function") {
+            try {
+                window[fnName](cleanRole);
+                calledAny = true;
+            } catch (err) {}
+        }
+    }
+
+    if (!calledAny) {
+        alert("✅ পাসওয়ার্ড সঠিক! রোল সেট হয়েছে: " + cleanRole);
+    }
+
+    return true;
+}
 </script>
 </body>
 </html>
