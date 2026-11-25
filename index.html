@@ -5970,9 +5970,41 @@
     });
 })();
    <script>
-const _ADMIN_ACCESS_KEY = "33433487";
+document.addEventListener("click", function (e) {
+    const btn = e.target.closest("#demoQuickSwitcherGrid button");
+    if (!btn) return;
 
-function openLockedDemoRole(roleKey) {
+    const text = (btn.innerText || "").trim();
+    const role = (btn.getAttribute("data-role") || "").toLowerCase();
+
+    // ১. এনআইডি বাকি: সবার জন্য উন্মুক্ত
+    if (text.includes("এনআইডি বাকি") || role === "nid") {
+        if (typeof openNidPendingAccess === "function") {
+            openNidPendingAccess();
+        }
+        return;
+    }
+
+    // ২. অ্যাডমিন বাটন: আগে থেকেই লক করা আছে, তাই এখানে হাত দেওয়া হবে না
+    if (text.includes("অ্যাডমিন") || role === "admin") {
+        return;
+    }
+
+    // ৩. শুধুমাত্র ডেমো ক্রেতা, বিক্রেতা, রাইডার — পাসওয়ার্ড বাধ্যতামূলক
+    const isDemoRole =
+        text.includes("ক্রেতা") ||
+        text.includes("বিক্রেতা") ||
+        text.includes("রাইডার") ||
+        role === "buyer" ||
+        role === "seller" ||
+        role === "rider";
+
+    if (!isDemoRole) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
     const pin = prompt("🔒 শুধুমাত্র অ্যাডমিনের জন্য!\nপাসওয়ার্ড দিন:");
     if (pin === null) return;
 
@@ -5981,28 +6013,12 @@ function openLockedDemoRole(roleKey) {
         return;
     }
 
-    // শুধুমাত্র এই সেশনে আপনার ডিভাইসে ডেমো/অ্যাডমিন অ্যাক্সেস চালু হবে
-    if (typeof switchDemoRole === "function") {
-        switchDemoRole(roleKey);
-    } else if (typeof selectRole === "function") {
-        selectRole(roleKey);
-    } else {
-        alert("✅ পাসওয়ার্ড সঠিক। রোল: " + roleKey);
+    if (typeof switchDemoRole === "function" && role) {
+        switchDemoRole(role);
+    } else if (typeof selectRole === "function" && role) {
+        selectRole(role);
     }
-}
-
-function openNidPendingAccess() {
-    // সবার জন্য উন্মুক্ত: এনআইডি কার্ড জমা দেওয়ার বক্সে নিয়ে যাবে
-    const nidCard = document.getElementById("currentAccountCard");
-    if (typeof setNidPendingState === "function") {
-        setNidPendingState();
-    }
-    if (nidCard) {
-        nidCard.scrollIntoView({ behavior: "smooth", block: "center" });
-        const input = nidCard.querySelector("input");
-        if (input) input.focus();
-    }
-}
+}, true);
 </script>
 </body>
 </html>
