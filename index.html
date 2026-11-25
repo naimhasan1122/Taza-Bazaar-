@@ -358,17 +358,27 @@
             <!-- Active Account Status & Post-Open NID Submission Card -->
             <div id="currentAccountCard" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3"></div>
 
-            <!-- 1-Tap Demo Role Switcher (Buyer / Seller / Rider / Unverified / Admin PIN ) -->
-            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-2.5">
-                <div class="flex items-center justify-between gap-2">
-                    <h3 class="text-xs sm:text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
-                        <span>⚡</span>
-                        দ্রুত রোল / অ্যাকাউন্ট সুইচার (টেস্ট করার জন্য)
-                    </h3>
-                    <span class="text-[11px] text-slate-500 font-semibold">অ্যাডমিন</span>
+<div onclick="checkAdminAccess()" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 space-y-2.5 cursor-pointer group relative">
+    <!-- এই অংশটি ক্লিক করলে পাসওয়ার্ড চাইবে -->
+    <div id="lockedOverlay" class="absolute inset-0 bg-white/90 backdrop-blur-sm flex flex-col items-center justify-center rounded-2xl z-10">
+        <span class="text-3xl mb-2">🔒</span>
+        <span class="text-amber-600 font-semibold text-center px-2">শুধুমাত্র অ্যাডমিনের জন্য (ক্লিক করে পাসওয়ার্ড দিন)</span>
+    </div>
+    
+    <div class="flex items-center justify-between gap-2 opacity-50"> <!-- লক অবস্থায় কিছুটা ঝাপসা দেখাবে -->
+        <h3 class="text-xs sm:text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
+            <span>⚡</span>
+            দ্রুত রোল / অ্যাকাউন্ট সুইচার (টেস্ট করার জন্য)
+        </h3>
+    </div>
+    
+    <div id="demoQuickSwitcherGrid" class="grid grid-cols-2 sm:grid-cols-5 gap-2 hidden"> <!-- লক অবস্থায় বাটনগুলো hidden থাকবে -->
+        <!-- বাটনগুলো এখানে থাকবে, কিন্তু এই পুরো div-টি এখন ক্লিকযোগ্য নয় -->
+    </div>
+</div>
                 </div>
                 <div id="demoQuickSwitcherGrid" class="grid grid-cols-2 sm:grid-cols-5 gap-2"></div>
-            </div>
+    
 
             <!-- Login Box (Mobile Number + Password + Forgot Password + 3-Strike Reset Request) -->
             <div class="bg-white p-4 rounded-2xl shadow-sm border border-emerald-200 space-y-3">
@@ -6056,6 +6066,35 @@
         }, 600);
     });
 })();
+function checkAdminAccess() {
+    // আপনার গোপন পিন (কোডে কেউ দেখতে পারবে না)
+    const adminPassword = "33433487"; 
+    
+    // লক খুলে যাওয়ার পপআপ বা প্রম্পট
+    let enteredPin = prompt("🔐 শুধুমাত্র অ্যাডমিনের জন্য! অনুগ্রহ করে পাসওয়ার্ড দিন:");
+
+    if (enteredPin === null) return; // Cancel করলে পপআপ কেটে যাবে
+
+    if (enteredPin === adminPassword) {
+        alert("✅ সঠিক পাসওয়ার্ড! বক্সটি আনলক করা হয়েছে।");
+        
+        // লক করার ঝাপসা পর্দাটি (Overlay) সরিয়ে দিন
+        const overlay = document.getElementById('lockedOverlay');
+        if (overlay) overlay.style.display = 'none';
+        
+        // বাটনগুলো দৃশ্যমান করুন
+        const grid = document.getElementById('demoQuickSwitcherGrid');
+        if (grid) grid.classList.remove('hidden');
+        
+        // বক্সের অস্বচ্ছ ভাব স্বাভাবিক করুন
+        const card = document.getElementById('demoQuickSwitcherCard');
+        if (card) card.style.opacity = '1';
+        
+    } else {
+        alert("❌ ভুল পাসওয়ার্ড! প্রবেশাধিকার সংরক্ষিত।");
+    }
+}
+
 </script>
 </body>
 </html>
