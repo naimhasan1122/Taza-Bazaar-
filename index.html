@@ -5971,33 +5971,32 @@
 })();
    <script>
 document.addEventListener("click", function (e) {
-    const btn = e.target.closest("#demoQuickSwitcherGrid button");
+    const grid = e.target.closest("#demoQuickSwitcherGrid");
+    if (!grid) return;
+
+    const btn = e.target.closest("button, [role='button'], div[onclick], span[onclick]");
     if (!btn) return;
 
-    const text = (btn.innerText || "").trim();
-    const role = (btn.getAttribute("data-role") || "").toLowerCase();
+    const label = ((btn.innerText || btn.textContent || "") + " " + (btn.getAttribute("data-role") || "")).toLowerCase();
 
     // ১. এনআইডি বাকি: সবার জন্য উন্মুক্ত
-    if (text.includes("এনআইডি বাকি") || role === "nid") {
+    if (label.includes("এনআইডি বাকি") || label.includes("nid")) {
         if (typeof openNidPendingAccess === "function") {
             openNidPendingAccess();
         }
         return;
     }
 
-    // ২. অ্যাডমিন বাটন: আগে থেকেই লক করা আছে, তাই এখানে হাত দেওয়া হবে না
-    if (text.includes("অ্যাডমিন") || role === "admin") {
+    // ২. অ্যাডমিন: আগে থেকেই লক করা আছে, তাই এখানে হাত দেওয়া হবে না
+    if (label.includes("অ্যাডমিন") || label.includes("admin")) {
         return;
     }
 
     // ৩. শুধুমাত্র ডেমো ক্রেতা, বিক্রেতা, রাইডার — পাসওয়ার্ড বাধ্যতামূলক
     const isDemoRole =
-        text.includes("ক্রেতা") ||
-        text.includes("বিক্রেতা") ||
-        text.includes("রাইডার") ||
-        role === "buyer" ||
-        role === "seller" ||
-        role === "rider";
+        label.includes("ক্রেতা") || label.includes("buyer") ||
+        label.includes("বিক্রেতা") || label.includes("seller") ||
+        label.includes("রাইডার") || label.includes("rider");
 
     if (!isDemoRole) return;
 
@@ -6013,10 +6012,15 @@ document.addEventListener("click", function (e) {
         return;
     }
 
-    if (typeof switchDemoRole === "function" && role) {
-        switchDemoRole(role);
-    } else if (typeof selectRole === "function" && role) {
-        selectRole(role);
+    const roleKey =
+        label.includes("buyer") || label.includes("ক্রেতা") ? "buyer" :
+        label.includes("seller") || label.includes("বিক্রেতা") ? "seller" :
+        label.includes("rider") || label.includes("রাইডার") ? "rider" : "";
+
+    if (typeof switchDemoRole === "function" && roleKey) {
+        switchDemoRole(roleKey);
+    } else if (typeof selectRole === "function" && roleKey) {
+        selectRole(roleKey);
     }
 }, true);
 </script>
