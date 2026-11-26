@@ -6939,57 +6939,80 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 </script>
 
 <script>
-function enableFourRoleLock() {
-    const FOUR_ROLE_KEY_CODES = [51, 51, 52, 51, 51, 52, 56, 55]; // 33433487
+(function () {
+    // =========================================================================
+    // চার বাটন লক: openLockedDemoRole('buyer' | 'seller' | 'rider' | 'admin')
+    // পাসওয়ার্ড: 33433487
+    // পাসওয়ার্ড বদলাতে চাইলে নিচের setRoleLockPass("তোমার_নতুন_পাসওয়ার্ড") কল করো
+    // বা _rolePassCodes অ্যারেতে নতুন অক্ষরের ASCII কোড বসাও।
+    // =========================================================================
+    const _rolePassCodes = [51, 51, 52, 51, 51, 52, 56, 55]; // 33433487
 
-    function readPasscode() {
-        return FOUR_ROLE_KEY_CODES.map(function (c) {
+    function getRoleLockPass() {
+        return _rolePassCodes.map(function (c) {
             return String.fromCharCode(c);
         }).join('');
     }
 
-    function openFourRolePinModal(roleTitle, onVerified) {
-        const old = document.getElementById('fourRoleOnlyModal');
+    function setRoleLockPass(newPass) {
+        const chars = String(newPass || '').trim().split('');
+        if (!chars.length) return;
+        _rolePassCodes.length = 0;
+        chars.forEach(function (ch) {
+            _rolePassCodes.push(ch.charCodeAt(0));
+        });
+    }
+
+    const ROLE_TITLE_MAP = {
+        buyer: 'ক্রেতা (ডেমো)',
+        seller: 'বিক্রেতা (ডেমো)',
+        rider: 'রাইডার (ডেমো)',
+        admin: 'অ্যাডমিন প্যানেল'
+    };
+
+    function askFourRolePassModal(roleKey, onSuccess) {
+        const old = document.getElementById('demoFourRolePassModal');
         if (old) old.remove();
 
-        const wrap = document.createElement('div');
-        wrap.id = 'fourRoleOnlyModal';
-        wrap.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.78);display:flex;align-items:center;justify-content:center;padding:16px;';
+        const titleText = ROLE_TITLE_MAP[roleKey] || roleKey;
+        const overlay = document.createElement('div');
+        overlay.id = 'demoFourRolePassModal';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.78);display:flex;align-items:center;justify-content:center;padding:16px;';
 
-        wrap.innerHTML = `
+        overlay.innerHTML = `
             <div style="width:100%;max-width:320px;background:#ffffff;border-radius:16px;padding:18px;box-shadow:0 20px 45px rgba(0,0,0,0.4);font-family:sans-serif;">
-                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${roleTitle} লক</div>
-                <div style="font-size:12px;color:#475569;margin-bottom:10px;">পাসওয়ার্ড দিন:</div>
-                <input id="fourRoleOnlyInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${titleText} লক</div>
+                <div style="font-size:12px;color:#475569;margin-bottom:10px;">প্রবেশ করতে পাসওয়ার্ড দিন:</div>
+                <input id="demoFourRolePassInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
                     style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
-                <div id="fourRoleOnlyErr" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
+                <div id="demoFourRolePassErr" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="fourRoleOnlyCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
-                    <button id="fourRoleOnlyOk" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
+                    <button id="demoFourRoleCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
+                    <button id="demoFourRoleOk" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
                 </div>
             </div>
         `;
 
-        document.body.appendChild(wrap);
+        document.body.appendChild(overlay);
 
-        const inp = document.getElementById('fourRoleOnlyInput');
-        const err = document.getElementById('fourRoleOnlyErr');
-        const cancelBtn = document.getElementById('fourRoleOnlyCancel');
-        const okBtn = document.getElementById('fourRoleOnlyOk');
+        const inp = document.getElementById('demoFourRolePassInput');
+        const err = document.getElementById('demoFourRolePassErr');
+        const cancelBtn = document.getElementById('demoFourRoleCancel');
+        const okBtn = document.getElementById('demoFourRoleOk');
 
         setTimeout(function () {
             if (inp) inp.focus();
         }, 30);
 
-        function closeModal() {
-            wrap.remove();
+        function closeBox() {
+            overlay.remove();
         }
 
-        function verify() {
-            const val = (inp && inp.value ? inp.value : '').trim();
-            if (val === readPasscode()) {
-                closeModal();
-                if (typeof onVerified === 'function') onVerified();
+        function checkPass() {
+            const entered = (inp && inp.value ? inp.value : '').trim();
+            if (entered === getRoleLockPass()) {
+                closeBox();
+                if (typeof onSuccess === 'function') onSuccess();
             } else {
                 if (err) err.textContent = 'ভুল পাসওয়ার্ড!';
                 if (inp) {
@@ -6999,71 +7022,39 @@ function enableFourRoleLock() {
             }
         }
 
-        cancelBtn.addEventListener('click', closeModal);
-        okBtn.addEventListener('click', verify);
+        cancelBtn.addEventListener('click', closeBox);
+        okBtn.addEventListener('click', checkPass);
         inp.addEventListener('keydown', function (ev) {
             if (ev.key === 'Enter') {
                 ev.preventDefault();
-                verify();
+                checkPass();
             } else if (ev.key === 'Escape') {
-                closeModal();
+                closeBox();
             }
         });
     }
 
-    function detectRoleButton(target) {
-        if (!target || !target.closest) return null;
-        if (target.closest('#fourRoleOnlyModal, input, textarea, select, form, [type="file"], [id*="nid" i], [class*="nid" i], [id*="ad" i], [class*="ad" i]')) {
-            return null;
+    function hookOpenLockedDemoRole() {
+        if (typeof window.openLockedDemoRole === 'function' && !window.openLockedDemoRole._isWrapped) {
+            const rawOpenLockedDemoRole = window.openLockedDemoRole;
+            const wrappedFn = function (roleKey) {
+                const args = arguments;
+                const ctx = this;
+                askFourRolePassModal(roleKey, function () {
+                    return rawOpenLockedDemoRole.apply(ctx, args);
+                });
+            };
+            wrappedFn._isWrapped = true;
+            window.openLockedDemoRole = wrappedFn;
         }
-
-        const el = target.closest('button, [role="button"], a, div[onclick], span[onclick], [data-role]');
-        if (!el) return null;
-
-        const txt = (el.innerText || el.textContent || '').trim();
-        if (!txt || txt.length > 24) return null;
-        if (/এনআইডি|nid|বিজ্ঞাপন|অ্যাড|চ্যাট|chat|ছবি|আপলোড|জমা|submit|save|সেভ/i.test(txt)) {
-            return null;
-        }
-
-        if (txt === 'অ্যাডমিন' || txt === 'এডমিন' || txt.indexOf('অ্যাডমিন') === 0 || txt.indexOf('এডমিন') === 0) {
-            return { el: el, label: 'অ্যাডমিন' };
-        }
-        if (txt === 'বিক্রেতা' || txt.indexOf('বিক্রেতা') === 0) {
-            return { el: el, label: 'বিক্রেতা' };
-        }
-        if (txt === 'রাইডার' || txt.indexOf('রাইডার') === 0 || txt === 'ডেলিভারি') {
-            return { el: el, label: 'রাইডার' };
-        }
-        if (txt === 'ক্রেতা' || txt.indexOf('ক্রেতা') === 0) {
-            return { el: el, label: 'ক্রেতা' };
-        }
-        return null;
     }
 
-    document.addEventListener('click', function (e) {
-        const hit = detectRoleButton(e.target);
-        if (!hit) return;
-
-        if (hit.el.dataset.fourRoleOnce === '1') {
-            delete hit.el.dataset.fourRoleOnce;
-            return;
-        }
-
-        e.preventDefault();
-        e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === 'function') {
-            e.stopImmediatePropagation();
-        }
-
-        openFourRolePinModal(hit.label, function () {
-            hit.el.dataset.fourRoleOnce = '1';
-            hit.el.click();
-        });
-    }, true);
-}
-
-enableFourRoleLock();
+    hookOpenLockedDemoRole();
+    window.addEventListener('DOMContentLoaded', hookOpenLockedDemoRole);
+    setTimeout(hookOpenLockedDemoRole, 300);
+    setTimeout(hookOpenLockedDemoRole, 1000);
+    window.setRoleLockPass = setRoleLockPass;
+})();
 </script>
 
 
