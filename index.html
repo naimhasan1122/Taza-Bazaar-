@@ -5889,9 +5889,132 @@
 window.addEventListener("error", function (e) {
     alert("JS Error: " + e.message + " (Line: " + e.lineno + ")");
 });
-window.addEventListener("unhandledrejection", function (e) {
-    alert("Promise Error: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
-});
+
+(function () {
+    // 1. রাইডার নিলে অ্যাডমিনের পেমেন্ট মেথড, না নিলে দোকানদারের পেমেন্ট মেথড অটো সেট
+    function syncRoutingPaymentMode() {
+        const riderRadios = Array.from(document.querySelectorAll('input[type="radio"], button, [data-routing], [data-delivery]'));
+        const textBlob = document.body ? document.body.innerText : "";
+        const isRiderSelected =
+            Boolean(document.querySelector('input[value*="rider" i]:checked')) ||
+            Boolean(document.querySelector('[data-routing*="rider" i].active, [data-delivery*="rider" i].active')) ||
+            textBlob.includes("রাইডার যুক্ত");
+
+        const adminPayInput = document.querySelector('#adminPaymentMethod, [name*="adminPayment" i], [data-admin-payment]');
+        const sellerPayBox = document.querySelector('#sellerPaymentBox, #sellerPaymentMethod, [name*="sellerPayment" i], [data-seller-payment]');
+
+        if (isRiderSelected) {
+            window.selectedPaymentOwner = "admin";
+            window.deliveryMode = "rider";
+            if (adminPayInput) {
+                adminPayInput.value = window.adminPaymentMethod || adminPayInput.value || "Admin Payment (Auto)";
+            }
+            if (sellerPayBox) {
+                sellerPayBox.style.display = "none";
+            }
+        } else {
+            window.selectedPaymentOwner = "seller";
+            window.deliveryMode = "direct";
+            if (sellerPayBox) {
+                sellerPayBox.style.display = "";
+            }
+        }
+    }
+
+    // 2. ছবি নির্বাচন করলে অটোমেটিক অ্যাড ও প্রিভিউ আপডেট
+    function bindAutoImageAttach() {
+        const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+        fileInputs.forEach((input) => {
+            if (input.dataset.autoBound === "1") return;
+            input.dataset.autoBound = "1";
+            input.addEventListener("change", function () {
+                const files = Array.from(input.files || []);
+                if (!files.length) return;
+                window.uploadedProductImages = window.uploadedProductImages || [];
+                files.forEach((f) => {
+                    const url = URL.createObjectURL(f);
+                    window.uploadedProductImages.push({ name: f.name, url: url, file: f });
+                });
+                const previewBox = document.querySelector('#imagePreview, #productImagePreview, .image-preview');
+                if (previewBox) {
+                    previewBox.innerHTML = window.uploadedProductImages
+                        .map((img) => `<img src="${img.url}" alt="${img.name}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;margin:4px;" />`)
+                        .join("");
+                }
+            });
+        });
+    }
+
+    // 3. পণ্য পাবলিক করে ই-বাজারে পাঠানো
+    function publishProductToEbazar(e) {
+        syncRoutingPaymentMode();
+
+        const titleEl = document.querySelector('#productName, #itemName, [name*="name" i], [name*="title" i]');
+        const priceEl = document.querySelector('#productPrice, #itemPrice, [name*="price" i]');
+        const name = titleEl && titleEl.value.trim() ? titleEl.value.trim() : "নতুন ই-বাজার পণ্য";
+        const price = priceEl && priceEl.value.trim() ? priceEl.value.trim() : "0";
+
+        const newItem = {
+            id: "prod_" + Date.now(),
+            name: name,
+            price: price,
+            paymentOwner: window.selectedPaymentOwner || "seller",
+            deliveryMode: window.deliveryMode || "direct",
+            adminDeliveryFee: window.adminDeliveryFee || 0,
+            images: window.uploadedProductImages || [],
+            published: true,
+            createdAt: new Date().toISOString()
+        };
+
+        try {
+            const existing = JSON.parse(localStorage.getItem("ebazarProducts") || "[]");
+            existing.unshift(newItem);
+            localStorage.setItem("ebazarProducts", JSON.stringify(existing));
+        } catch (err) {}
+
+        window.ebazarProducts = window.ebazarProducts || [];
+        window.ebazarProducts.unshift(newItem);
+
+        const listFns = ["renderEbazarProducts", "renderProducts", "loadProducts", "syncAllUI", "renderAll"];
+        listFns.forEach((fn) => {
+            if (typeof window[fn] === "function") {
+                try { window[fn](newItem); } catch (err) {}
+            }
+        });
+
+        const ebazarTabBtn = Array.from(document.querySelectorAll("button, a, [role='tab']")).find((el) =>
+            (el.innerText || "").includes("ই-বাজার")
+        );
+        if (ebazarTabBtn && e) {
+            setTimeout(() => {
+                if (typeof window.switchTab === "function") {
+                    window.switchTab("ebazar");
+                }
+            }, 80);
+        }
+
+        alert("✅ পণ্য ই-বাজারে পাবলিক করা হয়েছে!");
+    }
+
+document.addEventListener("change", syncRoutingPaymentMode, true);
+    document.addEventListener("click", function (e) {
+        syncRoutingPaymentMode();
+        const btn = e.target.closest("button, [role='button'], input[type='submit']");
+        if (!btn) return;
+        const txt = (btn.innerText || btn.value || "").trim();
+        if (txt.includes("ই-বাজারে পণ্য প্রকাশ করুন") || txt.includes("পণ্য প্রকাশ করুন")) {
+            e.preventDefault();
+            publishProductToEbazar(e);
+        }
+    }, true);
+
+    document.addEventListener("DOMContentLoaded", function () {
+        syncRoutingPaymentMode();
+        bindAutoImageAttach();
+    });
+    syncRoutingPaymentMode();
+    bindAutoImageAttach();
+})();
 </script>
 </body>
 </html>
