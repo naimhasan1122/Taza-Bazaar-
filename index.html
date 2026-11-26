@@ -7963,6 +7963,236 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         }).catch(() => {});
     }, 600);
 })();
+
+<script>
+(function () {
+    function st() {
+        if (typeof state !== 'undefined' && state && typeof state === 'object') {
+            window.state = state;
+            return state;
+        }
+        return window.state && typeof window.state === 'object' ? window.state : null;
+    }
+
+    function isAdm() {
+        try {
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
+        } catch (_) {}
+        const s = st();
+        const u = s && s.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
+    }
+
+    function canOwn(prod, u) {
+        if (!prod || !u) return false;
+        if (isAdm()) return true;
+        if (prod.sellerId && u.id && String(prod.sellerId) === String(u.id)) return true;
+        if (prod.sellerPhone && u.phone && String(prod.sellerPhone).replace(/\D/g, '') === String(u.phone).replace(/\D/g, '')) return true;
+        if (u.role === 'seller' && prod.sellerName && u.name && String(prod.sellerName).trim() === String(u.name).trim()) return true;
+        return false;
+    }
+
+    function toastNow(msg, icon) {
+        if (typeof window.showToast === 'function') {
+            window.showToast(msg, icon || '✅');
+        }
+    }
+
+    function syncViews() {
+        try {
+            if (typeof window.saveState === 'function') window.saveState();
+        } catch (_) {}
+        try {
+            if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid();
+        } catch (_) {}
+        pruneMarketGrid();
+        renderSellerListCards();
+    }
+
+    // ই-বাজার পেইজ থেকে ডিলিট হওয়া বা অন্যদের কাছে অফ করা পণ্য সরানো
+    function pruneMarketGrid() {
+        const s = st();
+        const grid = document.getElementById('productsGrid');
+        if (!s || !grid) return;
+
+        const u = s.currentUser;
+        const prods = Array.isArray(s.products) ? s.products : [];
+        const deletedIds = new Set((s.deletedProductIds || []).map(String));
+        const offForOthersIds = new Set(
+            prods
+                .filter(p => p && p.hiddenBySeller && !canOwn(p, u))
+                .map(p => String(p.id))
+        );
+
+        Array.from(grid.children).forEach(card => {
+            const html = card.outerHTML || '';
+            for (const id of deletedIds) {
+                if (id && html.includes(id)) {
+                    card.remove();
+                    return;
+                }
+            }
+            for (const id of offForOthersIds) {
+                if (id && html.includes(id)) {
+                    card.remove();
+                    return;
+                }
+            }
+        });
+    }
+
+    // বিক্রেতার পণ্যের তালিকায় নিজের পণ্যগুলো দেখানো + অফ/অন ও ডিলিট বাটন
+    function renderSellerListCards() {
+        const s = st();
+        const u = s && s.currentUser;
+        const listEl = document.getElementById('sellerMyProductsList');
+        if (!s || !u || !listEl || !Array.isArray(s.products)) return;
+
+        const deletedIds = new Set((s.deletedProductIds || []).map(String));
+        const mine = s.products.filter(p => p && !deletedIds.has(String(p.id)) && canOwn(p, u));
+
+        const bn = typeof window.toBn === 'function' ? window.toBn : (x => x);
+        const fmt = typeof window.formatMoney === 'function' ? window.formatMoney : (x => `${x} ৳`);
+
+        if (!mine.length) {
+            listEl.innerHTML = `<p class="text-xs text-slate-400">আপনার কোনো পণ্য নেই।</p>`;
+            return;
+        }
+
+        listEl.innerHTML = mine.map(p => {
+            const isOff = Boolean(p.hiddenBySeller);
+            return `
+                <div data-pid-card="${p.id}" class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        <img src="${p.img || ''}" class="w-11 h-11 rounded-lg object-cover shrink-0 bg-slate-200">
+                        <div class="min-w-0">
+                            <div class="font-bold text-slate-800 truncate">${p.name}</div>
+                            <div class="text-[11px] text-slate-500">${fmt(p.price)}/${p.unit || 'কেজি'} • স্টক: ${bn(p.stock)} • বিক্রেতা: ${p.sellerName || ''}</div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        <span class="px-2 py-0.5 rounded-full font-bold text-[10px] ${isOff ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800'}">${isOff ? 'অফ আছে' : 'লাইভ'}</span>
+                        <button type="button" data-p-toggle="${p.id}" class="px-2.5 py-1 rounded-lg font-extrabold text-[10px] ${isOff ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-amber-500 hover:bg-amber-600 text-slate-950'}">${isOff ? '🟢 অন করুন' : '⏸️ অফ করুন'}</button>
+                        <button type="button" data-p-delete="${p.id}" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-[10px]">🗑️ ডিলিট</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    window.deleteSellerProduct = function (productId) {
+        const s = st();
+        if (!s || !Array.isArray(s.products)) return false;
+
+        const pid = String(productId || '').trim();
+        const idx = s.products.findIndex(p => p && String(p.id).trim() === pid);
+        if (idx === -1) return false;
+
+        const prod = s.products[idx];
+        const u = s.currentUser;
+        if (!canOwn(prod, u)) {
+            toastNow('শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন ডিলিট করতে পারবেন!', '🔒');
+            return false;
+        }
+
+        if (!Array.isArray(s.deletedProductIds)) s.deletedProductIds = [];
+        if (!s.deletedProductIds.includes(prod.id)) s.deletedProductIds.push(prod.id);
+
+        s.products.splice(idx, 1);
+        if (Array.isArray(s.cart)) {
+            s.cart = s.cart.filter(c => c && String(c.productId).trim() !== pid);
+        }
+
+        const domCard = document.querySelector(`[data-pid-card="${CSS.escape(pid)}"]`);
+        if (domCard) domCard.remove();
+
+        try {
+            if (typeof window.recordHistoryEntry === 'function') {
+                window.recordHistoryEntry({
+                    category: 'পণ্য ডিলিট',
+                    title: `${(u && u.name) || 'বিক্রেতা'} "${prod.name}" পণ্যটি ডিলিট করেছেন`,
+                    actor: (u && u.name) || 'বিক্রেতা',
+                    amount: Number(prod.price || 0),
+                    decision: 'rejected',
+                    reason: 'বিক্রেতা বা অ্যাডমিন কর্তৃক ডিলিট',
+                    userIds: [prod.sellerId, u && u.id].filter(Boolean)
+                });
+            }
+        } catch (_) {}
+
+        syncViews();
+        toastNow(`"${prod.name}" ডিলিট করা হয়েছে`, '🗑️');
+        return true;
+    };
+
+    window.toggleProductVisibility = function (productId) {
+        const s = st();
+        if (!s || !Array.isArray(s.products)) return false;
+
+        const pid = String(productId || '').trim();
+        const prod = s.products.find(p => p && String(p.id).trim() === pid);
+        if (!prod) return false;
+
+        const u = s.currentUser;
+        if (!canOwn(prod, u)) {
+            toastNow('শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন অফ/অন করতে পারবেন!', '🔒');
+            return false;
+        }
+
+        prod.hiddenBySeller = !Boolean(prod.hiddenBySeller);
+        syncViews();
+        toastNow(
+            prod.hiddenBySeller
+                ? `"${prod.name}" অফ করা হয়েছে — এখন অন্যরা দেখতে পাবে না`
+                : `"${prod.name}" অন করা হয়েছে — এখন সবাই দেখতে পাবে`,
+            prod.hiddenBySeller ? '🙈' : '👁️'
+        );
+        return true;
+    };
+
+    document.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (!btn) return;
+
+        const delId = btn.getAttribute('data-p-delete');
+        const togId = btn.getAttribute('data-p-toggle');
+
+        if (delId) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+            window.deleteSellerProduct(delId);
+            return;
+        }
+
+        if (togId) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+            window.toggleProductVisibility(togId);
+        }
+    }, true);
+
+    const oldAddRender = window.renderAddProductTab;
+    if (typeof oldAddRender === 'function') {
+        window.renderAddProductTab = function () {
+            const res = oldAddRender.apply(this, arguments);
+            renderSellerListCards();
+            return res;
+        };
+    }
+
+    const oldGridRender = window.renderProductsGrid;
+    if (typeof oldGridRender === 'function') {
+        window.renderProductsGrid = function () {
+            const res = oldGridRender.apply(this, arguments);
+            pruneMarketGrid();
+            return res;
+        };
+    }
+
+    setTimeout(syncViews, 200);
+})();
 </script>
 
 
