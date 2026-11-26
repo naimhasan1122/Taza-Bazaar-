@@ -7623,306 +7623,345 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const DEL_PROD_KEY = "taza_bazar_deleted_prod_ids_v5";
+    const ROOM_DOC = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
+        ? firebase.firestore().collection('ebazar_realtime_app').doc('taza_bazar_live_v3')
+        : null;
 
-    function getState() {
-        if (typeof state !== "undefined" && state && typeof state === "object") {
+    let applyingRemote = false;
+    let pushTimer = null;
+    let lastKnownVersion = 0;
+    let seenNotifIds = new Set();
+
+    function st() {
+        if (typeof state !== 'undefined' && state && typeof state === 'object') {
             window.state = state;
             return state;
         }
-        return window.state && typeof window.state === "object" ? window.state : null;
+        return window.state && typeof window.state === 'object' ? window.state : null;
     }
 
-    function isAdmin() {
+    function isAdminNow() {
         try {
-            if (typeof isAdminActive === "function" && isAdminActive()) return true;
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
         } catch (_) {}
-        const st = getState();
-        const u = st && st.currentUser;
-        return Boolean(u && (u.role === "admin" || u.isAdmin === true));
+        const s = st();
+        const u = s && s.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
     }
 
-    function notify(msg, icon) {
-        if (typeof window.showToast === "function") {
-            window.showToast(msg, icon || "ℹ️");
-        } else {
-            alert(msg);
-        }
+    function toastMsg(msg, icon) {
+        if (typeof window.showToast === 'function') window.showToast(msg, icon || 'ℹ️');
     }
 
-    function loadDeletedSet(st) {
-        const set = new Set(Array.isArray(st && st.deletedProductIds) ? st.deletedProductIds : []);
-        try {
-            const raw = localStorage.getItem(DEL_PROD_KEY);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (parsed && Array.isArray(parsed.ids)) {
-                    parsed.ids.forEach(function (id) { set.add(String(id)); });
-                }
-            }
-        } catch (_) {}
-        return set;
+    // ডিলিট করা পণ্য বা ইউজার যেন কোনোভাবেই ব্যাক না আসে তার স্থায়ী রেকর্ড
+    function ensureTombstones(s) {
+        if (!Array.isArray(s.deletedProductIds)) s.deletedProductIds = [];
+        if (!Array.isArray(s.deletedAccountIds)) s.deletedAccountIds = [];
     }
 
-    function saveDeletedSet(st, set) {
-        const arr = Array.from(set);
-        if (st) {
-            st.deletedProductIds = arr;
-            if (Array.isArray(st.products)) {
-                st.products = st.products.filter(function (p) {
-                    return p && !set.has(String(p.id));
-                });
-            }
-        }
-        try {
-            localStorage.setItem(DEL_PROD_KEY, JSON.stringify({ ids: arr, updatedAt: Date.now() }));
-        } catch (_) {}
+    // ডেমো আবেদন ফিল্টার (শুধু আসল/সক্রিয় ডেটা থাকবে)
+    function isDemoEntry(item) {
+        if (!item) return false;
+        const text = `${item.id || ''} ${item.name || ''} ${item.title || ''} ${item.ownerName || ''} ${item.actor || ''}`.toLowerCase();
+        return Boolean(item.isDemo || text.includes('demo_seed') || text.includes('ডেমো'));
     }
 
-    function forceRemoveProductFromEverywhereDOM(productId) {
-        const pid = String(productId || "");
-        if (!pid) return;
-
-        // যেকোনো কার্ড/রো যার ভেতরে এই productId বা ডিলিট/অফ বাটন আছে
-        document.querySelectorAll("button, [onclick]").forEach(function (el) {
-            const oc = el.getAttribute("onclick") || "";
-            if (oc.includes(pid)) {
-                const card = el.closest("div.rounded-2xl, div.rounded-xl, div.border, tr, article, li");
-                if (card && !["historyList", "adminModalBodyContainer", "adminPanelBodyContainer"].includes(card.id)) {
-                    card.remove();
-                }
-            }
-        });
-    }
-
-    function refreshAllProductAndAdminViews() {
-        const st = getState();
-        if (st) {
-            saveDeletedSet(st, loadDeletedSet(st));
-        }
-        if (typeof window.saveState === "function") {
-            window.saveState();
-        }
-        if (typeof window.renderProductsGrid === "function") {
-            try { window.renderProductsGrid(); } catch (_) {}
-        }
-        if (typeof window.renderAddProductTab === "function") {
-            try { window.renderAddProductTab(); } catch (_) {}
-        }
-        if (typeof window.renderHistoryTab === "function") {
-            try { window.renderHistoryTab(); } catch (_) {}
-        }
-        if (isAdmin() && typeof window.renderAdminPanel === "function") {
-            try { window.renderAdminPanel(); } catch (_) {}
-        }
-    }
-
-    // ১. শক্তিশালী পণ্য ডিলিট ফাংশন (সব জায়গা থেকে সাথে সাথে সরাবে)
+    // ১. পণ্য ডিলিট ও অফ/অন (শুধু যে বিক্রেতা অ্যাড করেছেন তিনি বা অ্যাডমিন)
     window.deleteSellerProduct = function (productId) {
-        const st = getState();
-        if (!st) return notify("অ্যাপ স্টেট পাওয়া যায়নি!", "⚠️");
-        if (!Array.isArray(st.products)) st.products = [];
+        const s = st();
+        if (!s || !Array.isArray(s.products)) return;
+        const u = s.currentUser;
+        const prod = s.products.find(p => p.id === productId);
+        if (!prod || !u) return;
 
-        const pid = String(productId || "");
-        const u = st.currentUser || {};
-        const idx = st.products.findIndex(function (p) { return p && String(p.id) === pid; });
-
-        const prod = idx !== -1 ? st.products[idx] : { id: pid, name: "পণ্য", sellerId: u.id, price: 0 };
-        const ownerId = prod.sellerId || u.id;
-
-        if (!isAdmin() && ownerId && u.id && ownerId !== u.id) {
-            return notify("শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন পণ্য ডিলিট করতে পারবেন!", "🔒");
+        if (!isAdminNow() && prod.sellerId !== u.id) {
+            return toastMsg('শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন এই পণ্য ডিলিট করতে পারবেন!', '🔒');
         }
 
-        const delSet = loadDeletedSet(st);
-        delSet.add(pid);
-
-        if (idx !== -1) {
-            st.products.splice(idx, 1);
-        }
-        st.products = st.products.filter(function (p) { return p && !delSet.has(String(p.id)); });
-
-        if (Array.isArray(st.cart)) {
-            st.cart = st.cart.filter(function (c) { return c && String(c.productId) !== pid; });
+        ensureTombstones(s);
+        if (!s.deletedProductIds.includes(productId)) {
+            s.deletedProductIds.push(productId);
         }
 
-        saveDeletedSet(st, delSet);
-
-        if (!Array.isArray(st.history)) st.history = [];
-        st.history.unshift({
-            id: "DEL-" + Date.now() + "-" + Math.floor(100 + Math.random() * 900),
-            category: "পণ্য ডিলিট",
-            title: `"${prod.name || "পণ্য"}" পণ্যটি ডিলিট করা হয়েছিল (${u.name || "বিক্রেতা"})`,
-            actor: u.name || "বিক্রেতা",
-            sellerId: ownerId,
-            ownerId: ownerId,
-            targetUserId: ownerId,
-            userIds: [ownerId].filter(Boolean),
-            privateToOwner: true,
-            amount: prod.price || 0,
-            decision: "rejected",
-            reason: "পণ্য ডিলিট করা হয়েছে",
-            timestamp: (typeof nowBnTime === "function") ? `আজ, ${nowBnTime()}` : new Date().toLocaleTimeString()
-        });
-
-        forceRemoveProductFromEverywhereDOM(pid);
-        refreshAllProductAndAdminViews();
-        forceRemoveProductFromEverywhereDOM(pid);
-
-        if (typeof window.triggerMobileFrontNotification === "function") {
-            window.triggerMobileFrontNotification(
-                "পণ্য ডিলিট হয়েছে",
-                `"${prod.name || "পণ্য"}" ডিলিট হয়ে গেছে এবং আপনার হিস্ট্রিতে জমা আছে।`,
-                "alert"
-            );
-        } else {
-            notify(`"${prod.name || "পণ্য"}" ডিলিট হয়ে গেছে`, "🗑️");
+        s.products = s.products.filter(p => p.id !== productId);
+        if (Array.isArray(s.cart)) {
+            s.cart = s.cart.filter(c => c.productId !== productId);
         }
+
+        if (typeof window.recordHistoryEntry === 'function') {
+            window.recordHistoryEntry({
+                category: 'পণ্য ডিলিট',
+                title: `${u.name || 'ব্যবহারকারী'} "${prod.name}" পণ্যটি ডিলিট করেছেন`,
+                actor: u.name || 'ব্যবহারকারী',
+                amount: prod.price || 0,
+                decision: 'rejected',
+                reason: 'মালিক বা অ্যাডমিন কর্তৃক পণ্য ডিলিট করা হয়েছে',
+                userIds: [prod.sellerId, u.id].filter(Boolean)
+            });
+        }
+
+        if (typeof window.saveState === 'function') window.saveState();
+        if (typeof window.syncAllUI === 'function') window.syncAllUI();
+        pushCloudNow(true);
+        toastMsg(`"${prod.name}" স্থায়ীভাবে ডিলিট হয়েছে`, '🗑️');
     };
 
-    // ডিলিট বাটনে ক্লিক হলে সরাসরি deleteSellerProduct কল নিশ্চিত করা
-    document.addEventListener("click", function (e) {
-        const btn = e.target && e.target.closest ? e.target.closest("button") : null;
-        if (!btn) return;
-        const txt = (btn.innerText || btn.textContent || "").trim();
-        const oc = btn.getAttribute("onclick") || "";
+    window.toggleProductVisibility = function (productId) {
+        const s = st();
+        if (!s || !Array.isArray(s.products)) return;
+        const u = s.currentUser;
+        const prod = s.products.find(p => p.id === productId);
+        if (!prod || !u) return;
 
-        if (txt.includes("ডিলিট") && !txt.includes("ইউজার")) {
-            const match = oc.match(/deleteSellerProduct\(\s*['"]?([^'"\)]+)['"]?\s*\)/i);
-            if (match && match[1]) {
-                e.preventDefault();
-                e.stopPropagation();
-                if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
-                window.deleteSellerProduct(match[1]);
-            }
+        if (!isAdminNow() && prod.sellerId !== u.id) {
+            return toastMsg('শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন পণ্য অফ/অন করতে পারবেন!', '🔒');
         }
-    }, true);
 
-    // ২. নতুন ইউজার আইডি খুললে সাথে সাথে অ্যাডমিনের কাছে আবেদন ও রিয়েল-টাইম নোটিফিকেশন পাঠানো
-    function ensureRegistrationRequestsSynced() {
-        const st = getState();
-        if (!st) return;
-        if (!Array.isArray(st.registrationRequests)) st.registrationRequests = [];
-        if (!Array.isArray(st.accounts)) st.accounts = [];
-        if (!Array.isArray(st.notifications)) st.notifications = [];
+        prod.hiddenBySeller = !Boolean(prod.hiddenBySeller);
+        if (typeof window.saveState === 'function') window.saveState();
+        if (typeof window.syncAllUI === 'function') window.syncAllUI();
+        pushCloudNow(true);
+        toastMsg(
+            prod.hiddenBySeller ? `"${prod.name}" অফ করা হয়েছে` : `"${prod.name}" অন করা হয়েছে`,
+            prod.hiddenBySeller ? '🙈' : '👁️'
+        );
+    };
 
-        const knownReqIds = new Set(st.registrationRequests.map(function (r) { return r && r.id; }).filter(Boolean));
-        const knownReqPhones = new Set(st.registrationRequests.map(function (r) { return r && r.phone; }).filter(Boolean));
+    // ২. অ্যাডমিন প্যানেলে সব ইউজার (নাম, রোল, মোবাইল, পাসওয়ার্ড, ওয়ালেট) ও ডিলিট বাটন
+    window.adminDeleteUserAccount = function (accountId) {
+        if (!isAdminNow()) {
+            return toastMsg('শুধুমাত্র অ্যাডমিন ইউজার ডিলিট করতে পারবেন!', '🔒');
+        }
+        const s = st();
+        if (!s || !Array.isArray(s.accounts)) return;
+        const target = s.accounts.find(a => a.id === accountId);
+        if (!target) return toastMsg('ইউজার পাওয়া যায়নি!', '⚠️');
+        if (target.role === 'admin' || target.id === 'acc_admin_1') {
+            return toastMsg('মূল অ্যাডমিন অ্যাকাউন্ট ডিলিট করা যাবে না!', '⚠️');
+        }
+        if (!confirm(`"${target.name}" (${target.phone || target.id}) অ্যাকাউন্টটি ডিলিট করতে চান?`)) return;
 
-        st.accounts.forEach(function (acc) {
-            if (!acc || acc.role === "admin") return;
-            const hasById = acc.id && knownReqIds.has(acc.id);
-            const hasByPhone = acc.phone && knownReqPhones.has(acc.phone);
-            if (!hasById && !hasByPhone) {
-                const roleBn = acc.role === "seller" ? "বিক্রেতা" : (acc.role === "rider" ? "রাইডার" : "ক্রেতা");
-                const reqObj = {
-                    id: acc.id || ("REQ-" + Date.now() + "-" + Math.floor(100 + Math.random() * 900)),
-                    userId: acc.id,
-                    name: acc.name || "নতুন ইউজার",
-                    phone: acc.phone || "",
-                    role: acc.role || "buyer",
-                    roleLabel: roleBn,
-                    status: acc.status || "pending",
-                    createdAt: Date.now(),
-                    timeText: (typeof nowBnTime === "function") ? `আজ, ${nowBnTime()}` : new Date().toLocaleTimeString()
-                };
-                st.registrationRequests.unshift(reqObj);
-                knownReqIds.add(reqObj.id);
-                if (reqObj.phone) knownReqPhones.add(reqObj.phone);
+        ensureTombstones(s);
+        if (!s.deletedAccountIds.includes(accountId)) {
+            s.deletedAccountIds.push(accountId);
+        }
+        s.accounts = s.accounts.filter(a => a.id !== accountId);
+        if (Array.isArray(s.registrationRequests)) {
+            s.registrationRequests = s.registrationRequests.filter(r => r.accountId !== accountId);
+        }
 
-                const notifId = "REG-NOTIF-" + reqObj.id;
-                const alreadyNotified = st.notifications.some(function (n) { return n && n.id === notifId; });
-                if (!alreadyNotified) {
-                    st.notifications.unshift({
-                        id: notifId,
-                        title: `নতুন ${roleBn} আইডির আবেদন`,
-                        message: `${reqObj.name} (${reqObj.phone || "নম্বর নেই"}) ${roleBn} অ্যাকাউন্ট খোলার আবেদন করেছেন।`,
-                        forAdmin: true,
-                        targetRole: "admin",
-                        adminOnly: true,
-                        type: "alert",
-                        time: reqObj.timeText,
-                        createdAt: Date.now()
-                    });
-                }
-            }
-        });
-    }
+        if (typeof window.recordHistoryEntry === 'function') {
+            window.recordHistoryEntry({
+                category: 'ইউজার ডিলিট',
+                title: `অ্যাডমিন "${target.name}" (${target.phone || ''}) অ্যাকাউন্ট ডিলিট করেছেন`,
+                actor: 'অ্যাডমিন',
+                amount: 0,
+                decision: 'rejected',
+                reason: 'অ্যাডমিন কর্তৃক ইউজার ডিলিট করা হয়েছে',
+                userIds: [accountId]
+            });
+        }
 
-    if (typeof window.saveState === "function") {
-        const origSaveState = window.saveState;
-        window.saveState = function () {
-            const st = getState();
-            if (st) {
-                saveDeletedSet(st, loadDeletedSet(st));
-                ensureRegistrationRequestsSynced();
-            }
-            return origSaveState.apply(this, arguments);
-        };
-    }
+        if (typeof window.saveState === 'function') window.saveState();
+        if (typeof window.syncAllUI === 'function') window.syncAllUI();
+        pushCloudNow(true);
+        toastMsg(`"${target.name}" ডিলিট করা হয়েছে`, '🗑️');
+    };
 
-    // অ্যাডমিন প্যানেল খুললে নতুন ইউজার আবেদনের কার্ড দেখানো
-    function renderNewUserRequestsForAdmin() {
-        if (!isAdmin()) return;
-        const st = getState();
-        if (!st) return;
-        ensureRegistrationRequestsSynced();
+    function renderAdminUserDirectory() {
+        if (!isAdminNow()) return;
+        const s = st();
+        if (!s || !Array.isArray(s.accounts)) return;
 
         const host =
-            document.getElementById("adminModalBodyContainer") ||
-            document.getElementById("adminPanelBodyContainer") ||
-            document.getElementById("inlineAdminPanelHost");
+            document.getElementById('adminModalBodyContainer') ||
+            document.getElementById('adminPanelBodyContainer') ||
+            document.getElementById('inlineAdminPanelHost');
         if (!host) return;
 
-        const oldBox = document.getElementById("liveUserRegistrationBox");
-        if (oldBox) oldBox.remove();
+        const old = document.getElementById('adminFullUsersBox');
+        if (old) old.remove();
 
-        const reqs = Array.isArray(st.registrationRequests) ? st.registrationRequests : [];
-        const bn = typeof window.toBn === "function" ? window.toBn : function (v) { return v; };
+        const users = s.accounts.filter(a => a && a.role !== 'admin');
+        const buyers = users.filter(a => a.role === 'buyer');
+        const sellers = users.filter(a => a.role === 'seller');
+        const riders = users.filter(a => a.role === 'rider');
+        const bn = typeof window.toBn === 'function' ? window.toBn : (x => x);
+        const fmt = typeof window.formatMoney === 'function' ? window.formatMoney : (x => `${x} ৳`);
 
-        const box = document.createElement("div");
-        box.id = "liveUserRegistrationBox";
-        box.className = "p-3.5 rounded-2xl bg-slate-800/90 border border-slate-700 space-y-2 text-xs mt-3";
-
+        const box = document.createElement('div');
+        box.id = 'adminFullUsersBox';
+        box.className = 'p-3.5 rounded-2xl bg-slate-800/90 border border-slate-700 space-y-2.5 text-xs mt-3';
         box.innerHTML = `
-            <div class="flex items-center justify-between gap-2">
-                <span class="font-extrabold text-emerald-300 text-sm">🆕 নতুন ইউজার আইডি আবেদন (${bn(reqs.length)}টি)</span>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-extrabold text-amber-300 text-sm">👥 মোট ইউজার (${bn(users.length)} জন)</span>
+                <div class="flex flex-wrap gap-1.5 text-[10px] font-bold">
+                    <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">ক্রেতা: ${bn(buyers.length)}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300">বিক্রেতা: ${bn(sellers.length)}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">রাইডার: ${bn(riders.length)}</span>
+                </div>
             </div>
-            <div class="space-y-1.5 max-h-52 overflow-y-auto pr-1">
-                ${reqs.length ? reqs.map(function (r) {
+            <div class="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                ${users.length ? users.map(u => {
+                    const roleBn = u.role === 'seller' ? 'বিক্রেতা' : (u.role === 'rider' ? 'রাইডার' : 'ক্রেতা');
+                    const bal = (u.wallet && typeof u.wallet.balance !== 'undefined') ? u.wallet.balance : 0;
+                    const nidBadge = u.nidStatus === 'verified' ? '✅ NID' : (u.nidStatus === 'pending' ? '⏳ NID' : '—');
                     return `
-                        <div class="p-2.5 rounded-xl bg-slate-950/75 border border-slate-700 flex items-center justify-between gap-2">
+                        <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-700 flex items-center justify-between gap-2">
                             <div class="min-w-0">
-                                <div class="font-bold text-white truncate">${r.name || "নতুন ইউজার"} <span class="text-[10px] text-amber-300">(${r.roleLabel || r.role || "ইউজার"})</span></div>
-                                <div class="text-[10px] text-slate-400 truncate">মোবাইল: ${r.phone || "—"} • সময়: ${r.timeText || ""}</div>
+                                <div class="font-bold text-white truncate">${u.name || 'নামহীন'} <span class="text-[10px] text-amber-300">(${roleBn})</span> • <span class="text-[10px] text-sky-300">${nidBadge}</span></div>
+                                <div class="text-[10px] text-slate-300 truncate">মোবাইল: <span class="font-mono">${u.phone || '—'}</span> • পাসওয়ার্ড: <span class="font-mono text-emerald-300">${u.password || '—'}</span> • ওয়ালেট: ${fmt(bal)}</div>
                             </div>
-                            <span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold shrink-0">${r.status || "নতুন"}</span>
+                            <button type="button" onclick="adminDeleteUserAccount('${u.id}')" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-extrabold shrink-0">ডিলিট</button>
                         </div>
                     `;
-                }).join("") : `<p class="text-slate-400">এখনো কোনো নতুন আইডি আবেদন আসেনি।</p>`}
+                }).join('') : `<p class="text-slate-400">কোনো ইউজার নেই।</p>`}
             </div>
         `;
-
         host.appendChild(box);
     }
 
-    if (typeof window.renderAdminPanel === "function") {
-        const origAdmin = window.renderAdminPanel;
+    const origRenderAdmin = window.renderAdminPanel;
+    if (typeof origRenderAdmin === 'function') {
         window.renderAdminPanel = function () {
-            const res = origAdmin.apply(this, arguments);
-            renderNewUserRequestsForAdmin();
+            const s = st();
+            if (s) {
+                if (Array.isArray(s.registrationRequests)) {
+                    s.registrationRequests = s.registrationRequests.filter(r => !isDemoEntry(r));
+                }
+                if (Array.isArray(s.ads)) {
+                    s.ads = s.ads.filter(a => !isDemoEntry(a));
+                }
+            }
+            const res = origRenderAdmin.apply(this, arguments);
+            renderAdminUserDirectory();
             return res;
         };
     }
 
-    setTimeout(function () {
-        const st = getState();
-        if (st) {
-            saveDeletedSet(st, loadDeletedSet(st));
-            ensureRegistrationRequestsSynced();
-        }
-        renderNewUserRequestsForAdmin();
-    }, 350);
+    // ৩. রিয়েল-টাইম ক্লাউড সিঙ্ক (অ্যাকাউন্ট আবেদন, এপ্রুভ, এনআইডি, পণ্য, অর্ডার, রাইডার, ওয়ালেট, হিস্ট্রি)
+    function pushCloudNow(forceVersionBump) {
+        if (!ROOM_DOC || applyingRemote) return;
+        const s = st();
+        if (!s) return;
+        ensureTombstones(s);
+
+        try {
+            const copy = JSON.parse(JSON.stringify(s));
+            delete copy.currentUser;
+            const nextVer = forceVersionBump ? Date.now() : Math.max(Date.now(), Number(lastKnownVersion) + 1);
+            lastKnownVersion = nextVer;
+
+            ROOM_DOC.set({
+                version: nextVer,
+                updatedAt: Date.now(),
+                updatedBy: (s.currentUser && s.currentUser.id) || 'guest',
+                payload: copy
+            }).catch(() => {});
+        } catch (_) {}
+    }
+
+    function scheduleCloudPush() {
+        if (!ROOM_DOC || applyingRemote) return;
+        clearTimeout(pushTimer);
+        pushTimer = setTimeout(() => pushCloudNow(true), 120);
+    }
+
+    const rawSaveState = window.saveState;
+    if (typeof rawSaveState === 'function') {
+        window.saveState = function () {
+            const out = rawSaveState.apply(this, arguments);
+            scheduleCloudPush();
+            return out;
+        };
+    }
+
+    function deliverTargetedNotifications(s) {
+        if (!s || !s.currentUser || !Array.isArray(s.notifications)) return;
+        const me = s.currentUser;
+        const amAdmin = isAdminNow();
+
+        s.notifications.slice(0, 20).forEach((n, idx) => {
+            if (!n) return;
+            const key = String(n.id || `${n.title || ''}_${n.time || idx}`);
+            if (seenNotifIds.has(key)) return;
+
+            const forMe =
+                (amAdmin && (n.forAdmin || n.targetRole === 'admin')) ||
+                (Array.isArray(n.userIds) && n.userIds.includes(me.id)) ||
+                n.targetUserId === me.id ||
+                n.userId === me.id;
+
+            if (forMe) {
+                seenNotifIds.add(key);
+                if (typeof window.triggerMobileFrontNotification === 'function') {
+                    window.triggerMobileFrontNotification(
+                        n.title || 'নতুন লাইভ আপডেট',
+                        n.message || n.body || n.text || 'নতুন আপডেট এসেছে।',
+                        n.type || 'alert'
+                    );
+                }
+            }
+        });
+    }
+
+    if (ROOM_DOC) {
+        ROOM_DOC.onSnapshot(snap => {
+            if (!snap.exists || applyingRemote) return;
+            const s = st();
+            if (!s) return;
+            const doc = snap.data() || {};
+            const remote = doc.payload;
+            const ver = Number(doc.version || doc.updatedAt || 0);
+            if (!remote || typeof remote !== 'object') return;
+            if (ver > 0 && ver <= lastKnownVersion) return;
+
+            lastKnownVersion = ver;
+            applyingRemote = true;
+
+            try {
+                const keepUser = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
+                ensureTombstones(remote);
+                const delProdSet = new Set(remote.deletedProductIds || []);
+                const delAccSet = new Set(remote.deletedAccountIds || []);
+
+                Object.keys(remote).forEach(k => {
+                    if (k !== 'currentUser') s[k] = remote[k];
+                });
+
+                s.products = (s.products || []).filter(p => p && !delProdSet.has(p.id));
+                s.accounts = (s.accounts || []).filter(a => a && !delAccSet.has(a.id));
+
+                if (keepUser && Array.isArray(s.accounts)) {
+                    const updatedMe = s.accounts.find(a => a.id === keepUser.id || (keepUser.phone && a.phone === keepUser.phone));
+                    s.currentUser = updatedMe ? Object.assign({}, keepUser, updatedMe) : keepUser;
+                }
+
+                if (typeof rawSaveState === 'function') {
+                    rawSaveState.call(window);
+                }
+                if (typeof window.syncAllUI === 'function') {
+                    window.syncAllUI();
+                }
+                deliverTargetedNotifications(s);
+            } finally {
+                setTimeout(() => { applyingRemote = false; }, 120);
+            }
+        });
+    }
+
+    setTimeout(() => {
+        const s = st();
+        if (!s || !ROOM_DOC) return;
+        ROOM_DOC.get().then(snap => {
+            if (snap.exists) {
+                const d = snap.data() || {};
+                lastKnownVersion = Number(d.version || d.updatedAt || 0);
+            } else {
+                pushCloudNow(true);
+            }
+        }).catch(() => {});
+    }, 600);
 })();
 </script>
 
