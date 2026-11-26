@@ -8358,6 +8358,121 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    const EXTRA_CATEGORIES = [
+        'মাছ',
+        'শাক',
+        'শাকসবজি',
+        'দেশি আলু',
+        'চাল',
+        'ডাল',
+        'চাল ও ডাল',
+        'ফল',
+        'মুদি ও তেল',
+        'মাংস'
+    ];
+
+    function buildDatalist(allCats) {
+        let dl = document.getElementById('ebazarCustomCategoryList');
+        if (!dl) {
+            dl = document.createElement('datalist');
+            dl.id = 'ebazarCustomCategoryList';
+            document.body.appendChild(dl);
+        }
+        dl.innerHTML = allCats
+            .map(cat => `<option value="${String(cat).replace(/"/g, '&quot;')}"></option>`)
+            .join('');
+    }
+
+    function upgradeCategoryFieldToTypeAndSelect() {
+        const oldEl = document.getElementById('prodCategoryInput');
+        if (!oldEl) return;
+
+        const stObj = (typeof state !== 'undefined' && state && typeof state === 'object')
+            ? state
+            : (window.state && typeof window.state === 'object' ? window.state : null);
+
+        const existingProds = (stObj && Array.isArray(stObj.products))
+            ? stObj.products.map(p => p && p.category).filter(Boolean)
+            : [];
+
+        const mergedCats = Array.from(new Set([...EXTRA_CATEGORIES, ...existingProds]));
+        buildDatalist(mergedCats);
+
+        const currentVal = (oldEl.value || '').trim() || 'মাছ';
+
+        if (oldEl.tagName === 'SELECT') {
+            const comboInput = document.createElement('input');
+            comboInput.type = 'text';
+            comboInput.id = 'prodCategoryInput';
+            comboInput.name = oldEl.name || 'prodCategoryInput';
+            comboInput.className = oldEl.className;
+            comboInput.setAttribute('list', 'ebazarCustomCategoryList');
+            comboInput.setAttribute('autocomplete', 'off');
+            comboInput.placeholder = 'সিলেক্ট করুন বা নিজের ক্যাটাগরি লিখুন (যেমন: দেশি আলু)';
+            comboInput.value = currentVal;
+
+            oldEl.parentNode.replaceChild(comboInput, oldEl);
+        } else if (oldEl.tagName === 'INPUT') {
+            oldEl.setAttribute('list', 'ebazarCustomCategoryList');
+            oldEl.setAttribute('autocomplete', 'off');
+            if (!oldEl.placeholder) {
+                oldEl.placeholder = 'সিলেক্ট করুন বা নিজের ক্যাটাগরি লিখুন';
+            }
+        }
+
+        // ই-বাজার ক্যাটাগরি চিপসেও নতুন লেখা ক্যাটাগরি যুক্ত রাখা (যদি CATEGORIES অ্যারে থাকে)
+        try {
+            if (typeof CATEGORIES !== 'undefined' && Array.isArray(CATEGORIES)) {
+                mergedCats.forEach(c => {
+                    if (c && c !== 'সব' && !CATEGORIES.includes(c)) {
+                        CATEGORIES.push(c);
+                    }
+                });
+            }
+        } catch (_) {}
+    }
+
+    // ফর্ম সাবমিটের আগে নতুন লেখা ক্যাটাগরি থাকলে সেটিকেও সংরক্ষণ করা
+    document.addEventListener('submit', function (e) {
+        const form = e.target;
+        if (!form || form.id !== 'addProductForm') return;
+        const catEl = document.getElementById('prodCategoryInput');
+        const typedCat = (catEl && catEl.value || '').trim();
+        if (!typedCat) return;
+
+        if (!EXTRA_CATEGORIES.includes(typedCat)) {
+            EXTRA_CATEGORIES.push(typedCat);
+        }
+        try {
+            if (typeof CATEGORIES !== 'undefined' && Array.isArray(CATEGORIES) && typedCat !== 'সব' && !CATEGORIES.includes(typedCat)) {
+                CATEGORIES.push(typedCat);
+            }
+        } catch (_) {}
+        buildDatalist(EXTRA_CATEGORIES);
+    }, true);
+
+    const prevAddTabRender = window.renderAddProductTab;
+    if (typeof prevAddTabRender === 'function') {
+        window.renderAddProductTab = function () {
+            const active = document.activeElement;
+            const keepFocus = active && active.id === 'prodCategoryInput';
+            const res = prevAddTabRender.apply(this, arguments);
+            upgradeCategoryFieldToTypeAndSelect();
+            if (keepFocus) {
+                const again = document.getElementById('prodCategoryInput');
+                if (again) again.focus();
+            }
+            return res;
+        };
+    }
+
+    setTimeout(upgradeCategoryFieldToTypeAndSelect, 150);
+    setTimeout(upgradeCategoryFieldToTypeAndSelect, 600);
+})();
+</script>
+
 
 </body>
 	</html>
