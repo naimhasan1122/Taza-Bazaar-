@@ -6150,6 +6150,209 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
     };
 }
 
+<!-- Firebase Compat SDK (রিমোট ইউজার, অ্যাডমিন, অর্ডার, রাইডার, নোটিফিকেশন ও লাইভ লোকেশন সিঙ্ক) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<script>
+(function () {
+    const firebaseConfig = {
+        apiKey: "AIzaSyCbaHWzP342aM454Qw2U3lAv7aw3K0FMPg",
+        authDomain: "taza-bazar-62c60.firebaseapp.com",
+        projectId: "taza-bazar-62c60",
+        storageBucket: "taza-bazar-62c60.firebasestorage.app",
+        messagingSenderId: "959164783804",
+        appId: "1:959164783804:web:c36e1c34be5257f1b404b9"
+    };
+
+    if (!window.firebase) return;
+    if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+    }
+
+    const db = firebase.firestore();
+    const ROOM_ID = 'taza_bazar_live_main';
+    const docRef = db.collection('ebazar_live_sync').doc(ROOM_ID);
+
+    let isApplyingRemote = false;
+    let pushTimer = null;
+    let locationWatchId = null;
+    let lastNotifiedIds = new Set();
+
+    function safeCloneForCloud(rawState) {
+        try {
+            return JSON.parse(JSON.stringify(rawState || {}));
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function pushStateToCloudNow() {
+        if (isApplyingRemote || typeof state === 'undefined' || !state) return;
+        const payload = safeCloneForCloud(state);
+        if (!payload) return;
+
+        // নিজের লোকাল currentUser যেন অন্য ইউজারের সেশন ওভাররাইট না করে
+        delete payload.currentUser;
+
+        docRef.set({
+            appState: payload,
+            updatedAt: Date.now(),
+            updatedBy: (state.currentUser && state.currentUser.id) || 'guest'
+        }, { merge: true }).catch(function (err) {
+            console.warn('Cloud push error:', err);
+        });
+    }
+
+    function scheduleCloudPush() {
+        if (isApplyingRemote) return;
+        clearTimeout(pushTimer);
+        pushTimer = setTimeout(pushStateToCloudNow, 180);
+    }
+
+    // saveState() কল হলে লোকাল সেভের সাথে সাথে ক্লাউডেও পাঠাবে
+    const _origSaveState = window.saveState;
+    if (typeof _origSaveState === 'function') {
+        window.saveState = function () {
+            const res = _origSaveState.apply(this, arguments);
+            scheduleCloudPush();
+            return res;
+        };
+    }
+
+    // নতুন নোটিফিকেশন আসলে যার জন্য নোটিফিকেশন তাকে লাইভ অ্যালার্ট দেখাবে
+    function checkIncomingLiveNotifications() {
+        if (!state || !state.currentUser) return;
+        const myId = state.currentUser.id;
+        const myRole = state.currentUser.role;
+        const list = Array.isArray(state.notifications) ? state.notifications : [];
+
+        list.slice(0, 15).forEach(function (n) {
+            if (!n || !n.id || lastNotifiedIds.has(n.id)) return;
+            const forMe =
+                n.targetUserId === myId ||
+                n.userId === myId ||
+                (Array.isArray(n.userIds) && n.userIds.includes(myId)) ||
+                (typeof isAdminActive === 'function' && isAdminActive() && (n.targetRole === 'admin' || n.forAdmin));
+
+            if (forMe) {
+                lastNotifiedIds.add(n.id);
+                if (typeof triggerMobileFrontNotification === 'function') {
+                    triggerMobileFrontNotification(
+                        n.title || 'নতুন আপডেট',
+                        n.message || n.body || n.text || 'নতুন একটি কার্যক্রম এসেছে।',
+                        n.type || 'alert'
+                    );
+                } else if (typeof showToast === 'function') {
+                    showToast(n.title || 'নতুন নোটিফিকেশন এসেছে!', '🔔');
+                }
+            }
+        });
+    }
+
+    // ডেলিভারি চলাকালীন ক্রেতা, বিক্রেতা ও রাইডার/ডেলিভারি বয়ের লাইভ লোকেশন সিঙ্ক
+    function startThreeWayLiveLocationSync() {
+        if (!navigator.geolocation || locationWatchId !== null) return;
+        locationWatchId = navigator.geolocation.watchPosition(
+            function (pos) {
+                if (!state || !state.currentUser) return;
+                const u = state.currentUser;
+                const activeOrder = (state.orders || []).find(function (o) {
+                    const status = String(o.status || '').toLowerCase();
+                    const isDelivering =
+                        status.includes('deliver') ||
+                        status.includes('rider') ||
+                        status.includes('way') ||
+                        status.includes('ডেলিভারি') ||
+                        status.includes('রাইডার');
+                    const involved =
+                        o.buyerId === u.id ||
+                        o.sellerId === u.id ||
+                        o.riderId === u.id ||
+                        (typeof isAdminActive === 'function' && isAdminActive());
+                    return isDelivering && involved;
+                });
+
+                if (!activeOrder) return;
+
+                if (!state.liveLocations || typeof state.liveLocations !== 'object') {
+                    state.liveLocations = {};
+                }
+                if (!state.liveLocations[activeOrder.id]) {
+                    state.liveLocations[activeOrder.id] = {};
+                }
+
+                state.liveLocations[activeOrder.id][u.id] = {
+                    userId: u.id,
+                    name: u.name,
+                    role: u.role,
+                    lat: pos.coords.latitude,
+                    lng: pos.coords.longitude,
+                    updatedAt: Date.now()
+                };
+
+                pushStateToCloudNow();
+            },
+            function () {},
+            { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+        );
+    }
+
+    // ক্লাউড থেকে রিয়েল-টাইম আপডেট রিসিভ করা (অ্যাকাউন্ট রিকোয়েস্ট, আইডি যাচাই, অ্যাড আবেদন, অর্ডার, রাইডার, প্রোডাক্ট)
+    docRef.onSnapshot(function (snap) {
+        if (!snap.exists || typeof state === 'undefined' || !state) return;
+        const data = snap.data() || {};
+        const remote = data.appState;
+        if (!remote || typeof remote !== 'object') return;
+        if (data.updatedBy && state.currentUser && data.updatedBy === state.currentUser.id && !isApplyingRemote) {
+            // নিজের করা আপডেট ইতোমধ্যে লোকালি আছে
+        }
+
+        isApplyingRemote = true;
+        try {
+            const keepCurrentUser = state.currentUser;
+
+            Object.keys(remote).forEach(function (key) {
+                if (key !== 'currentUser') {
+                    state[key] = remote[key];
+                }
+            });
+
+            // বর্তমান ইউজারের আপডেটেড স্ট্যাটাস (যেমন অ্যাডমিন অনুমোদন করলে approved/verified হওয়া) accounts থেকে সিঙ্ক
+            if (keepCurrentUser && Array.isArray(state.accounts)) {
+                const freshAcc = state.accounts.find(function (a) {
+                    return a.id === keepCurrentUser.id || (keepCurrentUser.phone && a.phone === keepCurrentUser.phone);
+                });
+                state.currentUser = freshAcc ? Object.assign({}, keepCurrentUser, freshAcc) : keepCurrentUser;
+            }
+
+            if (typeof _origSaveState === 'function') {
+                _origSaveState.call(window);
+            }
+            if (typeof syncAllUI === 'function') {
+                syncAllUI();
+            }
+            checkIncomingLiveNotifications();
+            startThreeWayLiveLocationSync();
+        } finally {
+            setTimeout(function () {
+                isApplyingRemote = false;
+            }, 120);
+        }
+    }, function (err) {
+        console.warn('Firestore snapshot error:', err);
+    });
+
+    // প্রথম লোডে ক্লাউডে প্রাথমিক ডেটা না থাকলে বর্তমান লোকাল ডেটা পুশ করা
+    docRef.get().then(function (snap) {
+        if (!snap.exists && typeof state !== 'undefined' && state) {
+            pushStateToCloudNow();
+        }
+        startThreeWayLiveLocationSync();
+    }).catch(function () {});
+})();
+</script>
+
 </script>
 </body>
 	</html>
