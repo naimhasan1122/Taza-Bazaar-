@@ -6728,7 +6728,184 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
     }, true);
 })();
 </script>
+<script>
+(function () {
+    // =========================================================================
+    // শুধুমাত্র ৪টি বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন) লক ফাংশন
+    // এনআইডি, বিজ্ঞাপন, অ্যাকাউন্ট বা অন্য কোনো জায়গায় কোনো লক নেই
+    // পাসওয়ার্ড বদলাতে চাইলে নিচের passCodes অ্যারেতে নিজের পাসওয়ার্ড বসাবে
+    // =========================================================================
+    function buildDigest(pinText) {
+        const clean = String(pinText || '').trim();
+        let h1 = 2166136261;
+        let h2 = 16777619;
+        for (let i = 0; i < clean.length; i++) {
+            const code = clean.charCodeAt(i);
+            h1 ^= code;
+            h1 = Math.imul(h1, 16777619) >>> 0;
+            h2 = ((h2 * 131) + code + (i + 1) * 7) >>> 0;
+        }
+        return h1.toString(16).padStart(8, '0') + '_' + h2.toString(16).padStart(8, '0');
+    }
 
+    // পাসওয়ার্ড বদলাতে চাইলে: যে পাসওয়ার্ড চাও সেটি দিয়ে buildDigest('তোমার_নতুন_পাসওয়ার্ড') চালিয়ে
+    // যে মান পাবে, সেটি নিচের ALLOWED_DIGESTS-এ বসিয়ে দিলেই হবে (ডিফল্ট পাসওয়ার্ড: 33433487)
+    const DEFAULT_PIN_FROM_CODES = [51, 51, 52, 51, 51, 52, 56, 55]
+        .map(function (n) { return String.fromCharCode(n); })
+        .join('');
+
+    const ALLOWED_DIGESTS = [
+        buildDigest(DEFAULT_PIN_FROM_CODES)
+    ];
+
+    function isValidOwnerPassword(enteredPin) {
+        const digest = buildDigest(enteredPin);
+        return ALLOWED_DIGESTS.indexOf(digest) !== -1;
+    }
+
+    function askFourRolePassword(roleName, onAuthorized) {
+        const oldModal = document.getElementById('onlyFourRoleLockModal');
+        if (oldModal) oldModal.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'onlyFourRoleLockModal';
+        modal.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(15,23,42,0.75);display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        modal.innerHTML = `
+            <div style="width:100%;max-width:320px;background:#ffffff;border-radius:16px;padding:18px;box-shadow:0 18px 40px rgba(0,0,0,0.35);font-family:sans-serif;">
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${roleName} লক</div>
+                <div style="font-size:12px;color:#475569;margin-bottom:10px;">পাসওয়ার্ড দিন:</div>
+                <input id="onlyFourRolePinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
+                    style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
+                <div id="onlyFourRolePinError" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button id="onlyFourRoleCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;">বাতিল</button>
+                    <button id="onlyFourRoleSubmit" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;">খুলুন</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        const pinInput = document.getElementById('onlyFourRolePinInput');
+        const errBox = document.getElementById('onlyFourRolePinError');
+        const cancelBtn = document.getElementById('onlyFourRoleCancel');
+        const submitBtn = document.getElementById('onlyFourRoleSubmit');
+
+        if (pinInput) {
+            pinInput.focus();
+        }
+
+        function closeBox() {
+            modal.remove();
+        }
+
+        function verifyAndEnter() {
+            const val = pinInput ? pinInput.value : '';
+            if (isValidOwnerPassword(val)) {
+                closeBox();
+                if (typeof onAuthorized === 'function') {
+                    onAuthorized();
+                }
+            } else {
+                if (errBox) errBox.textContent = 'ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন।';
+                if (pinInput) {
+                    pinInput.value = '';
+                    pinInput.focus();
+                }
+            }
+        }
+
+        cancelBtn.addEventListener('click', closeBox);
+        submitBtn.addEventListener('click', verifyAndEnter);
+        pinInput.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                verifyAndEnter();
+            } else if (ev.key === 'Escape') {
+                closeBox();
+            }
+        });
+    }
+
+    function getExactFourRole(btn) {
+        if (!btn || btn.tagName !== 'BUTTON') return null;
+        if (btn.id && btn.id.indexOf('onlyFourRole') === 0) return null;
+
+        // এনআইডি, বিজ্ঞাপন/অ্যাড, ফর্ম বা ইনপুট সংশ্লিষ্ট কোনো বাটন নয়
+        if (btn.closest('#onlyFourRoleLockModal, form, [id*="nid" i], [class*="nid" i], [id*="ad" i], [class*="ad" i]')) {
+            return null;
+        }
+
+        const label = (btn.innerText || btn.textContent || '').trim();
+        if (!label || label.length > 20) return null;
+
+        if (/এনআইডি|nid|বিজ্ঞাপন|অ্যাড|submit|জমা|save|সেভ/i.test(label)) {
+            return null;
+        }
+
+        if (label === 'অ্যাডমিন' || label === 'এডমিন' || label.indexOf('অ্যাডমিন') === 0 || label.indexOf('এডমিন') === 0) {
+            return 'অ্যাডমিন';
+        }
+        if (label === 'বিক্রেতা' || label.indexOf('বিক্রেতা') === 0) {
+            return 'বিক্রেতা';
+        }
+        if (label === 'রাইডার' || label === 'ডেলিভারি' || label.indexOf('রাইডার') === 0) {
+            return 'রাইডার';
+        }
+        if (label === 'ক্রেতা' || label.indexOf('ক্রেতা') === 0) {
+            return 'ক্রেতা';
+        }
+
+        return null;
+    }
+
+    function attachLockToFourButtons() {
+        const allButtons = document.querySelectorAll('button');
+        allButtons.forEach(function (btn) {
+            if (btn.dataset.fourLockAttached === '1') return;
+            const roleName = getExactFourRole(btn);
+            if (!roleName) return;
+
+            btn.dataset.fourLockAttached = '1';
+            const origHandler = btn.onclick;
+            btn.onclick = null;
+
+            btn.addEventListener('click', function (e) {
+                if (btn.dataset.fourLockAllowOnce === '1') {
+                    delete btn.dataset.fourLockAllowOnce;
+                    if (typeof origHandler === 'function') {
+                        return origHandler.call(btn, e);
+                    }
+                    return;
+                }
+
+                e.preventDefault();
+                e.stopImmediatePropagation();
+
+                askFourRolePassword(roleName, function () {
+                    btn.dataset.fourLockAllowOnce = '1';
+                    if (typeof origHandler === 'function') {
+                        origHandler.call(btn, e);
+                    } else {
+                        btn.click();
+                    }
+                });
+            }, true);
+        });
+    }
+
+    attachLockToFourButtons();
+
+    const domWatcher = new MutationObserver(function () {
+        attachLockToFourButtons();
+    });
+    domWatcher.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true
+    });
+})();
+</script>
 
 
 </body>
