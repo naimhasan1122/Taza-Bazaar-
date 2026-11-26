@@ -7966,7 +7966,7 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    function st() {
+    function getStateRef() {
         if (typeof state !== 'undefined' && state && typeof state === 'object') {
             window.state = state;
             return state;
@@ -7974,66 +7974,55 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return window.state && typeof window.state === 'object' ? window.state : null;
     }
 
-    function isAdm() {
+    function isAdminUser() {
         try {
             if (typeof isAdminActive === 'function' && isAdminActive()) return true;
         } catch (_) {}
-        const s = st();
+        const s = getStateRef();
         const u = s && s.currentUser;
         return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
     }
 
-    function canOwn(prod, u) {
-        if (!prod || !u) return false;
-        if (isAdm()) return true;
-        if (prod.sellerId && u.id && String(prod.sellerId) === String(u.id)) return true;
-        if (prod.sellerPhone && u.phone && String(prod.sellerPhone).replace(/\D/g, '') === String(u.phone).replace(/\D/g, '')) return true;
-        if (u.role === 'seller' && prod.sellerName && u.name && String(prod.sellerName).trim() === String(u.name).trim()) return true;
+    function isProductOwner(prod, user) {
+        if (!prod || !user) return false;
+        if (isAdminUser()) return true;
+        if (prod.sellerId && user.id && String(prod.sellerId) === String(user.id)) return true;
+        if (prod.sellerPhone && user.phone && String(prod.sellerPhone).replace(/\D/g, '') === String(user.phone).replace(/\D/g, '')) return true;
+        if (user.role === 'seller' && prod.sellerName && user.name && String(prod.sellerName).trim() === String(user.name).trim()) return true;
         return false;
     }
 
-    function toastNow(msg, icon) {
+    function showAlert(msg, icon) {
         if (typeof window.showToast === 'function') {
             window.showToast(msg, icon || '✅');
         }
     }
 
-    function syncViews() {
-        try {
-            if (typeof window.saveState === 'function') window.saveState();
-        } catch (_) {}
-        try {
-            if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid();
-        } catch (_) {}
-        pruneMarketGrid();
-        renderSellerListCards();
-    }
-
-    // ই-বাজার পেইজ থেকে ডিলিট হওয়া বা অন্যদের কাছে অফ করা পণ্য সরানো
-    function pruneMarketGrid() {
-        const s = st();
+    // ই-বাজার পেইজ থেকে ডিলিট বা অন্যদের কাছে অফ করা পণ্য সরানো
+    function refreshEbazarGridVisibility() {
+        const s = getStateRef();
         const grid = document.getElementById('productsGrid');
         if (!s || !grid) return;
 
         const u = s.currentUser;
-        const prods = Array.isArray(s.products) ? s.products : [];
-        const deletedIds = new Set((s.deletedProductIds || []).map(String));
-        const offForOthersIds = new Set(
-            prods
-                .filter(p => p && p.hiddenBySeller && !canOwn(p, u))
+        const products = Array.isArray(s.products) ? s.products : [];
+        const deletedSet = new Set((s.deletedProductIds || []).map(String));
+        const offForOthersSet = new Set(
+            products
+                .filter(p => p && p.hiddenBySeller && !isProductOwner(p, u))
                 .map(p => String(p.id))
         );
 
         Array.from(grid.children).forEach(card => {
-            const html = card.outerHTML || '';
-            for (const id of deletedIds) {
-                if (id && html.includes(id)) {
+            const raw = card.outerHTML || '';
+            for (const id of deletedSet) {
+                if (id && raw.includes(id)) {
                     card.remove();
                     return;
                 }
             }
-            for (const id of offForOthersIds) {
-                if (id && html.includes(id)) {
+            for (const id of offForOthersSet) {
+                if (id && raw.includes(id)) {
                     card.remove();
                     return;
                 }
@@ -8041,15 +8030,15 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         });
     }
 
-    // বিক্রেতার পণ্যের তালিকায় নিজের পণ্যগুলো দেখানো + অফ/অন ও ডিলিট বাটন
-    function renderSellerListCards() {
-        const s = st();
+    // "আপনার যোগ করা পণ্যসমূহ" লিস্ট নতুন করে তৈরি করা (অফ/অন ও ডিলিট বাটনসহ)
+    function refreshSellerProductCards() {
+        const s = getStateRef();
         const u = s && s.currentUser;
         const listEl = document.getElementById('sellerMyProductsList');
         if (!s || !u || !listEl || !Array.isArray(s.products)) return;
 
-        const deletedIds = new Set((s.deletedProductIds || []).map(String));
-        const mine = s.products.filter(p => p && !deletedIds.has(String(p.id)) && canOwn(p, u));
+        const deletedSet = new Set((s.deletedProductIds || []).map(String));
+        const mine = s.products.filter(p => p && !deletedSet.has(String(p.id)) && isProductOwner(p, u));
 
         const bn = typeof window.toBn === 'function' ? window.toBn : (x => x);
         const fmt = typeof window.formatMoney === 'function' ? window.formatMoney : (x => `${x} ৳`);
@@ -8062,7 +8051,7 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         listEl.innerHTML = mine.map(p => {
             const isOff = Boolean(p.hiddenBySeller);
             return `
-                <div data-pid-card="${p.id}" class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                <div data-prod-card-id="${p.id}" class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
                     <div class="flex items-center gap-2.5 min-w-0">
                         <img src="${p.img || ''}" class="w-11 h-11 rounded-lg object-cover shrink-0 bg-slate-200">
                         <div class="min-w-0">
@@ -8072,16 +8061,30 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
                     </div>
                     <div class="flex items-center gap-1.5 shrink-0">
                         <span class="px-2 py-0.5 rounded-full font-bold text-[10px] ${isOff ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800'}">${isOff ? 'অফ আছে' : 'লাইভ'}</span>
-                        <button type="button" data-p-toggle="${p.id}" class="px-2.5 py-1 rounded-lg font-extrabold text-[10px] ${isOff ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-amber-500 hover:bg-amber-600 text-slate-950'}">${isOff ? '🟢 অন করুন' : '⏸️ অফ করুন'}</button>
-                        <button type="button" data-p-delete="${p.id}" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-[10px]">🗑️ ডিলিট</button>
+                        <button type="button" data-toggle-pid="${p.id}" class="px-2.5 py-1 rounded-lg font-extrabold text-[10px] ${isOff ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-amber-500 hover:bg-amber-600 text-slate-950'}">${isOff ? '🟢 অন করুন' : '⏸️ অফ করুন'}</button>
+                        <button type="button" data-delete-pid="${p.id}" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-[10px]">🗑️ ডিলিট</button>
                     </div>
                 </div>
             `;
         }).join('');
     }
 
-    window.deleteSellerProduct = function (productId) {
-        const s = st();
+    function saveAndUpdateAll() {
+        const s = getStateRef();
+        if (!s) return;
+        try {
+            if (typeof window.saveState === 'function') window.saveState();
+        } catch (_) {}
+        try {
+            if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid();
+        } catch (_) {}
+        refreshEbazarGridVisibility();
+        refreshSellerProductCards();
+    }
+
+    // নতুন ডিলিট ফাংশন
+    window.deleteProductByOwnerOrAdmin = function (productId) {
+        const s = getStateRef();
         if (!s || !Array.isArray(s.products)) return false;
 
         const pid = String(productId || '').trim();
@@ -8090,8 +8093,8 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
         const prod = s.products[idx];
         const u = s.currentUser;
-        if (!canOwn(prod, u)) {
-            toastNow('শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন ডিলিট করতে পারবেন!', '🔒');
+        if (!isProductOwner(prod, u)) {
+            showAlert('শুধুমাত্র যে বিক্রেতা পণ্যটি যোগ করেছেন বা অ্যাডমিন ডিলিট করতে পারবেন!', '🔒');
             return false;
         }
 
@@ -8103,8 +8106,8 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             s.cart = s.cart.filter(c => c && String(c.productId).trim() !== pid);
         }
 
-        const domCard = document.querySelector(`[data-pid-card="${CSS.escape(pid)}"]`);
-        if (domCard) domCard.remove();
+        const cardEl = document.querySelector(`[data-prod-card-id="${CSS.escape(pid)}"]`);
+        if (cardEl) cardEl.remove();
 
         try {
             if (typeof window.recordHistoryEntry === 'function') {
@@ -8120,13 +8123,14 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             }
         } catch (_) {}
 
-        syncViews();
-        toastNow(`"${prod.name}" ডিলিট করা হয়েছে`, '🗑️');
+        saveAndUpdateAll();
+        showAlert(`"${prod.name}" ডিলিট করা হয়েছে`, '🗑️');
         return true;
     };
 
-    window.toggleProductVisibility = function (productId) {
-        const s = st();
+    // নতুন অফ/অন ফাংশন
+    window.toggleProductOffOn = function (productId) {
+        const s = getStateRef();
         if (!s || !Array.isArray(s.products)) return false;
 
         const pid = String(productId || '').trim();
@@ -8134,34 +8138,41 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         if (!prod) return false;
 
         const u = s.currentUser;
-        if (!canOwn(prod, u)) {
-            toastNow('শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন অফ/অন করতে পারবেন!', '🔒');
+        if (!isProductOwner(prod, u)) {
+            showAlert('শুধুমাত্র যে বিক্রেতা পণ্যটি যোগ করেছেন বা অ্যাডমিন অফ/অন করতে পারবেন!', '🔒');
             return false;
         }
 
         prod.hiddenBySeller = !Boolean(prod.hiddenBySeller);
-        syncViews();
-        toastNow(
+        saveAndUpdateAll();
+        showAlert(
             prod.hiddenBySeller
-                ? `"${prod.name}" অফ করা হয়েছে — এখন অন্যরা দেখতে পাবে না`
-                : `"${prod.name}" অন করা হয়েছে — এখন সবাই দেখতে পাবে`,
+                ? `"${prod.name}" অফ করা হয়েছে — ই-বাজারে কেউ দেখতে পাবে না`
+                : `"${prod.name}" অন করা হয়েছে — ই-বাজারে সবাই দেখতে পাবে`,
             prod.hiddenBySeller ? '🙈' : '👁️'
         );
         return true;
     };
 
+    // পুরনো নাম দিয়ে কেউ কল করলেও নতুন ফাংশনে পাঠাবে
+    window.deleteSellerProduct = window.deleteProductByOwnerOrAdmin;
+    window.toggleProductVisibility = window.toggleProductOffOn;
+
+    // বাটন ক্লিক ধরার ফাংশন
     document.addEventListener('click', function (e) {
         const btn = e.target && e.target.closest ? e.target.closest('button') : null;
         if (!btn) return;
 
-        const delId = btn.getAttribute('data-p-delete');
-        const togId = btn.getAttribute('data-p-toggle');
+        const delId = btn.getAttribute('data-delete-pid');
+        const togId = btn.getAttribute('data-toggle-pid');
+        const onclickAttr = btn.getAttribute('onclick') || '';
+        const btnTxt = (btn.innerText || btn.textContent || '').trim();
 
         if (delId) {
             e.preventDefault();
             e.stopPropagation();
             if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-            window.deleteSellerProduct(delId);
+            window.deleteProductByOwnerOrAdmin(delId);
             return;
         }
 
@@ -8169,29 +8180,56 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             e.preventDefault();
             e.stopPropagation();
             if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-            window.toggleProductVisibility(togId);
+            window.toggleProductOffOn(togId);
+            return;
+        }
+
+        // মূল কোডের কোনো পুরনো বাটনে ডিলিট বা অফ/অন থাকলে কার্ড ইনডেক্স বা onclick থেকে id বের করা
+        if (btn.closest('#sellerMyProductsList')) {
+            const s = getStateRef();
+            const u = s && s.currentUser;
+            const deletedSet = new Set(((s && s.deletedProductIds) || []).map(String));
+            const mine = (s && Array.isArray(s.products))
+                ? s.products.filter(p => p && !deletedSet.has(String(p.id)) && isProductOwner(p, u))
+                : [];
+            const card = btn.closest('div.rounded-xl') || btn.closest('div');
+            const cards = Array.from(document.querySelectorAll('#sellerMyProductsList > div'));
+            const idx = cards.indexOf(card);
+            const matchId = (onclickAttr.match(/\(\s*['"]([^'"]+)['"]\s*\)/) || [])[1] || (mine[idx] && mine[idx].id);
+
+            if (matchId && (onclickAttr.includes('Delete') || onclickAttr.includes('delete') || btnTxt.includes('ডিলিট'))) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                window.deleteProductByOwnerOrAdmin(matchId);
+            } else if (matchId && (onclickAttr.includes('Toggle') || onclickAttr.includes('toggle') || btnTxt.includes('অফ করুন') || btnTxt.includes('অন করুন'))) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                window.toggleProductOffOn(matchId);
+            }
         }
     }, true);
 
-    const oldAddRender = window.renderAddProductTab;
-    if (typeof oldAddRender === 'function') {
+    const baseAddTab = window.renderAddProductTab;
+    if (typeof baseAddTab === 'function') {
         window.renderAddProductTab = function () {
-            const res = oldAddRender.apply(this, arguments);
-            renderSellerListCards();
+            const res = baseAddTab.apply(this, arguments);
+            refreshSellerProductCards();
             return res;
         };
     }
 
-    const oldGridRender = window.renderProductsGrid;
-    if (typeof oldGridRender === 'function') {
+    const baseGrid = window.renderProductsGrid;
+    if (typeof baseGrid === 'function') {
         window.renderProductsGrid = function () {
-            const res = oldGridRender.apply(this, arguments);
-            pruneMarketGrid();
+            const res = baseGrid.apply(this, arguments);
+            refreshEbazarGridVisibility();
             return res;
         };
     }
 
-    setTimeout(syncViews, 200);
+    setTimeout(saveAndUpdateAll, 200);
 })();
 </script>
 
