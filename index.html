@@ -7152,5 +7152,186 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    // =========================================================================
+    // চারটি বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন) লক সিস্টেম
+    // বিজ্ঞাপন দেখা ও এনআইডি জমা দেওয়ায় কোনো লক নেই
+    // =========================================================================
+    function computePinDigest(rawPin) {
+        const str = String(rawPin || '').trim();
+        let h1 = 0x811c9dc5;
+        let h2 = 0x01000193;
+        for (let i = 0; i < str.length; i++) {
+            const c = str.charCodeAt(i);
+            h1 ^= c;
+            h1 = Math.imul(h1, 0x01000193) >>> 0;
+            h2 = ((h2 << 5) - h2 + c + i * 17) >>> 0;
+        }
+        return h1.toString(16).padStart(8, '0') + '-' + h2.toString(16).padStart(8, '0');
+    }
+
+    const EXPECTED_ROLE_LOCK_DIGEST = computePinDigest(
+        ['51', '51', '52', '51', '51', '52', '56', '55'].map(n => String.fromCharCode(Number(n))).join('')
+    );
+    const UNLOCKED_SESSION_MAP = {};
+
+    function verifyRolePin(inputPin) {
+        return computePinDigest(inputPin) === EXPECTED_ROLE_LOCK_DIGEST;
+    }
+
+    function promptRoleUnlockModal(roleLabel, onSuccess) {
+        const existing = document.getElementById('ebazarRolePinModal');
+        if (existing) existing.remove();
+
+        const wrap = document.createElement('div');
+        wrap.id = 'ebazarRolePinModal';
+        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.75);display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        wrap.innerHTML = `
+            <div style="width:100%;max-width:340px;background:#ffffff;border-radius:18px;padding:20px;box-shadow:0 20px 40px rgba(0,0,0,0.35);font-family:sans-serif;">
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${roleLabel} লক করা আছে</div>
+                <div style="font-size:12px;color:#475569;margin-bottom:12px;">এই অপশনে প্রবেশ করতে গোপন পাসওয়ার্ড দিন:</div>
+                <input id="ebazarRolePinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
+                    style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:10px;outline:none;">
+                <div id="ebazarRolePinErr" style="font-size:11px;color:#dc2626;min-height:16px;margin-bottom:10px;font-weight:700;"></div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button id="ebazarRolePinCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
+                    <button id="ebazarRolePinSubmit" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(wrap);
+        const inp = document.getElementById('ebazarRolePinInput');
+        const errEl = document.getElementById('ebazarRolePinErr');
+        const btnOk = document.getElementById('ebazarRolePinSubmit');
+        const btnNo = document.getElementById('ebazarRolePinCancel');
+
+        setTimeout(() => inp && inp.focus(), 50);
+
+        function closeModal() {
+            wrap.remove();
+        }
+
+        function attempt() {
+            const val = inp ? inp.value : '';
+            if (verifyRolePin(val)) {
+                UNLOCKED_SESSION_MAP[roleLabel] = true;
+                closeModal();
+                if (typeof onSuccess === 'function') onSuccess();
+            } else {
+                if (errEl) errEl.textContent = 'ভুল পাসওয়ার্ড! অনুমোদিত পাসওয়ার্ড দিন।';
+                if (inp) {
+                    inp.value = '';
+                    inp.focus();
+                }
+            }
+        }
+
+        btnNo.addEventListener('click', closeModal);
+        btnOk.addEventListener('click', attempt);
+        inp.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                attempt();
+            } else if (ev.key === 'Escape') {
+                closeModal();
+            }
+        });
+        wrap.addEventListener('click', function (ev) {
+            if (ev.target === wrap) closeModal();
+        });
+    }
+
+    function isExcludedAction(el, text, attr) {
+        // এনআইডি জমা দেওয়া ও বিজ্ঞাপন দেখা/বড় করা কখনোই লক হবে না
+        if (
+            text.includes('এনআইডি') ||
+            text.includes('nid') ||
+            text.includes('বিজ্ঞাপন') ||
+            text.includes('অ্যাড') ||
+            text.includes('বড় করে দেখুন') ||
+            attr.includes('nid') ||
+            attr.includes('verify') ||
+            attr.includes('ad') ||
+            attr.includes('banner')
+        ) {
+            return true;
+        }
+        if (el.closest('[data-no-role-lock], .ad-card, .ad-banner, #nidModal, #nidSection')) {
+            return true;
+        }
+        return false;
+    }
+
+    function detectLockedRoleButton(target) {
+        if (!target || !target.closest) return null;
+        const el = target.closest('button, [role="button"], .role-btn, .demo-role-btn');
+        if (!el) return null;
+
+        const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+        const attr = ((el.getAttribute('onclick') || '') + ' ' + (el.id || '') + ' ' + (el.className || '')).toLowerCase();
+
+        if (isExcludedAction(el, text, attr)) return null;
+
+        // শুধু সুনির্দিষ্ট রোল/ডেমো বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন)
+        const isRoleControl =
+            attr.includes('role') ||
+            attr.includes('demo') ||
+            attr.includes('switchuser') ||
+            attr.includes('loginas') ||
+            attr.includes('selectrole') ||
+            text.length <= 24;
+
+        if (!isRoleControl) return null;
+
+        if (text.includes('অ্যাডমিন') || text.includes('এডমিন') || /\badmin\b/.test(attr)) {
+            return 'অ্যাডমিন';
+        }
+        if (text.includes('বিক্রেতা') || /\bseller\b/.test(attr)) {
+            return 'বিক্রেতা';
+        }
+        if (text.includes('রাইডার') || text.includes('ডেলিভারি') || /\brider\b|\bdelivery\b/.test(attr)) {
+            return 'রাইডার';
+        }
+        if (text.includes('ক্রেতা') || /\bbuyer\b/.test(attr)) {
+            return 'ক্রেতা';
+        }
+        return null;
+    }
+
+    document.addEventListener('click', function (e) {
+        if (e.target && e.target.dataset && e.target.dataset.rolePinPassed === '1') {
+            delete e.target.dataset.rolePinPassed;
+            return;
+        }
+        const roleName = detectLockedRoleButton(e.target);
+        if (!roleName) return;
+
+        const triggerEl = e.target.closest('button, [role="button"], .role-btn, .demo-role-btn') || e.target;
+        const isInsideWorkspace = Boolean(triggerEl.closest('#adminPanel, #sellerPanel, #riderPanel, #buyerPanel, .dashboard-panel'));
+        if (isInsideWorkspace) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') {
+            e.stopImmediatePropagation();
+        }
+
+        if (UNLOCKED_SESSION_MAP[roleName]) {
+            triggerEl.dataset.rolePinPassed = '1';
+            setTimeout(() => triggerEl.click(), 10);
+            return;
+        }
+
+        promptRoleUnlockModal(roleName, function () {
+            triggerEl.dataset.rolePinPassed = '1';
+            setTimeout(() => triggerEl.click(), 10);
+        });
+    }, true);
+})();
+</script>
+
 </body>
 	</html>
