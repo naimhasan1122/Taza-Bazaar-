@@ -6939,157 +6939,213 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 </script>
 
 <script>
-(function () {
+(function (global) {
     // =========================================================================
-    // নতুন চার বাটন লক সিস্টেম: ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন
-    // পাসওয়ার্ড: 33433487
-    // পাসওয়ার্ড বদলাতে চাইলে: নিচের encodeRolePin('তোমার_নতুন_পাসওয়ার্ড') চালিয়ে
-    // যে মান পাবে, সেটি PIN_VAULT অ্যারেতে বসিয়ে দিলেই হবে।
+    // নতুন জেনারেটেড লক ইঞ্জিন: ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন
+    // গোপন পাসওয়ার্ড: 33433487 (কোড থেকে চাইলে নিচের keyTable বদলে নিতে পারবে)
     // =========================================================================
-    function encodeRolePin(pinStr) {
-        const clean = String(pinStr || '').trim();
-        let x = 0x9e3779b9;
-        let y = 0x85ebca6b;
-        for (let i = 0; i < clean.length; i++) {
-            const c = clean.charCodeAt(i);
-            x = Math.imul(x ^ c, 0x27d4eb2d) >>> 0;
-            y = ((y << 7) | (y >>> 25)) ^ (c + i * 31);
-            y = y >>> 0;
-        }
-        return x.toString(16).padStart(8, '0') + '-' + y.toString(16).padStart(8, '0');
+    const _keyTable = [51, 51, 52, 51, 51, 52, 56, 55];
+
+    function getActivePasscode() {
+        return _keyTable.map(function (n) { return String.fromCharCode(n); }).join('');
     }
 
-    const DEFAULT_MASTER_PIN = String.fromCharCode(51, 51, 52, 51, 51, 52, 56, 55);
-    const PIN_VAULT = [encodeRolePin(DEFAULT_MASTER_PIN)];
-
-    function isPinMatched(typedPin) {
-        return PIN_VAULT.includes(encodeRolePin(typedPin));
+    // চাইলে কোড থেকে সহজেই পাসওয়ার্ড বদলাতে পারো:
+    // যেমন setActivePasscode("12345678") দিলে পাসওয়ার্ড 12345678 হয়ে যাবে
+    function setActivePasscode(newPinText) {
+        const chars = String(newPinText || '').trim().split('');
+        if (!chars.length) return;
+        _keyTable.length = 0;
+        chars.forEach(function (ch) {
+            _keyTable.push(ch.charCodeAt(0));
+        });
     }
 
-    function openFourRoleLock(titleText, afterUnlock) {
-        const existingBox = document.getElementById('newFourRoleLockBox');
-        if (existingBox) existingBox.remove();
+    function openLockPrompt(roleLabel, runAfterUnlock) {
+        const existing = document.getElementById('freshRoleLockOverlay');
+        if (existing) existing.remove();
 
-        const backdrop = document.createElement('div');
-        backdrop.id = 'newFourRoleLockBox';
-        backdrop.style.cssText = [
-            'position:fixed',
-            'inset:0',
-            'z-index:2147483647',
-            'background:rgba(15,23,42,0.78)',
-            'display:flex',
-            'align-items:center',
-            'justify-content:center',
-            'padding:16px'
-        ].join(';');
+        const box = document.createElement('div');
+        box.id = 'freshRoleLockOverlay';
+        box.setAttribute(
+            'style',
+            'position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;' +
+            'background:rgba(2,6,23,0.78);display:flex;align-items:center;justify-content:center;padding:16px;'
+        );
 
-        backdrop.innerHTML = `
-            <div style="width:100%;max-width:320px;background:#ffffff;border-radius:16px;padding:18px;box-shadow:0 20px 45px rgba(0,0,0,0.4);font-family:sans-serif;">
-                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${titleText} লক</div>
-                <div style="font-size:12px;color:#475569;margin-bottom:10px;">প্রবেশ করতে পাসওয়ার্ড দিন:</div>
-                <input id="newFourRolePinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
-                    style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
-                <div id="newFourRolePinErr" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
-                <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="newFourRoleCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
-                    <button id="newFourRoleOk" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
-                </div>
-            </div>
-        `;
+        const card = document.createElement('div');
+        card.setAttribute(
+            'style',
+            'width:100%;max-width:320px;background:#ffffff;border-radius:16px;padding:18px;' +
+            'box-shadow:0 22px 48px rgba(0,0,0,0.45);font-family:sans-serif;'
+        );
 
-        document.body.appendChild(backdrop);
+        const title = document.createElement('div');
+        title.textContent = '🔒 ' + roleLabel + ' লক করা আছে';
+        title.setAttribute('style', 'font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;');
 
-        const pinInput = document.getElementById('newFourRolePinInput');
-        const errText = document.getElementById('newFourRolePinErr');
-        const cancelBtn = document.getElementById('newFourRoleCancel');
-        const okBtn = document.getElementById('newFourRoleOk');
+        const sub = document.createElement('div');
+        sub.textContent = 'কাজ করতে পাসওয়ার্ড দিন:';
+        sub.setAttribute('style', 'font-size:12px;color:#475569;margin-bottom:10px;');
 
-        setTimeout(() => {
-            if (pinInput) pinInput.focus();
-        }, 40);
+        const passField = document.createElement('input');
+        passField.type = 'password';
+        passField.inputMode = 'numeric';
+        passField.autocomplete = 'off';
+        passField.placeholder = 'পাসওয়ার্ড লিখুন';
+        passField.setAttribute(
+            'style',
+            'width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;' +
+            'border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;'
+        );
 
-        function closeLock() {
-            backdrop.remove();
+        const errMsg = document.createElement('div');
+        errMsg.setAttribute('style', 'font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;');
+
+        const btnRow = document.createElement('div');
+        btnRow.setAttribute('style', 'display:flex;gap:8px;justify-content:flex-end;');
+
+        const cancelB = document.createElement('button');
+        cancelB.type = 'button';
+        cancelB.textContent = 'বাতিল';
+        cancelB.setAttribute(
+            'style',
+            'padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;' +
+            'color:#334155;font-weight:700;font-size:12px;cursor:pointer;'
+        );
+
+        const unlockB = document.createElement('button');
+        unlockB.type = 'button';
+        unlockB.textContent = 'খুলুন';
+        unlockB.setAttribute(
+            'style',
+            'padding:8px 16px;border-radius:10px;border:none;background:#0f172a;' +
+            'color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;'
+        );
+
+        btnRow.appendChild(cancelB);
+        btnRow.appendChild(unlockB);
+        card.appendChild(title);
+        card.appendChild(sub);
+        card.appendChild(passField);
+        card.appendChild(errMsg);
+        card.appendChild(btnRow);
+        box.appendChild(card);
+        document.body.appendChild(box);
+
+        setTimeout(function () {
+            passField.focus();
+        }, 25);
+
+        function teardown() {
+            if (box && box.parentNode) box.parentNode.removeChild(box);
         }
 
-        function verifyAndGo() {
-            const val = pinInput ? pinInput.value : '';
-            if (isPinMatched(val)) {
-                closeLock();
-                if (typeof afterUnlock === 'function') afterUnlock();
-            } else {
-                if (errText) errText.textContent = 'ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন।';
-                if (pinInput) {
-                    pinInput.value = '';
-                    pinInput.focus();
+        function checkCode() {
+            const entered = (passField.value || '').trim();
+            if (entered === getActivePasscode()) {
+                teardown();
+                if (typeof runAfterUnlock === 'function') {
+                    runAfterUnlock();
                 }
+            } else {
+                errMsg.textContent = 'ভুল পাসওয়ার্ড! সঠিক পাসওয়ার্ড দিন।';
+                passField.value = '';
+                passField.focus();
             }
         }
 
-        cancelBtn.addEventListener('click', closeLock);
-        okBtn.addEventListener('click', verifyAndGo);
-        pinInput.addEventListener('keydown', function (ev) {
+        cancelB.addEventListener('click', teardown);
+        unlockB.addEventListener('click', checkCode);
+        passField.addEventListener('keydown', function (ev) {
             if (ev.key === 'Enter') {
                 ev.preventDefault();
-                verifyAndGo();
+                checkCode();
             } else if (ev.key === 'Escape') {
-                closeLock();
+                teardown();
             }
         });
     }
 
-    function matchRoleButton(targetEl) {
-        if (!targetEl || !targetEl.closest) return null;
-
-        // ইনপুট, ফাইল, ফর্ম, এনআইডি বা বিজ্ঞাপনের কোনো কিছুতে লক নয়
-        if (targetEl.closest('#newFourRoleLockBox, input, textarea, select, form, [type="file"], [id*="nid" i], [class*="nid" i], [id*="ad" i], [class*="ad" i]')) {
+    function detectFourRoleName(el) {
+        if (!el || !el.closest) return null;
+        if (el.closest('#freshRoleLockOverlay, input, textarea, select, form, [type="file"], [id*="nid" i], [class*="nid" i], [id*="ad" i], [class*="ad" i]')) {
             return null;
         }
+        const target = el.closest('button, [role="button"], a, div[onclick], span[onclick], [data-role]');
+        if (!target) return null;
 
-        const clickable = targetEl.closest('button, [role="button"], .role-btn, .demo-btn, [onclick]');
-        if (!clickable) return null;
-
-        const label = (clickable.innerText || clickable.textContent || '').trim();
-        if (!label || label.length > 22) return null;
+        const label = (target.innerText || target.textContent || '').trim();
+        if (!label || label.length > 24) return null;
         if (/এনআইডি|nid|বিজ্ঞাপন|অ্যাড|ছবি|আপলোড|জমা|submit|save|সেভ/i.test(label)) return null;
 
-        if (label === 'অ্যাডমিন' || label === 'এডমিন' || label.startsWith('অ্যাডমিন') || label.startsWith('এডমিন')) {
-            return { node: clickable, roleName: 'অ্যাডমিন' };
+        if (label === 'অ্যাডমিন' || label === 'এডমিন' || label.indexOf('অ্যাডমিন') === 0 || label.indexOf('এডমিন') === 0) {
+            return { el: target, name: 'অ্যাডমিন' };
         }
-        if (label === 'বিক্রেতা' || label.startsWith('বিক্রেতা')) {
-            return { node: clickable, roleName: 'বিক্রেতা' };
+        if (label === 'বিক্রেতা' || label.indexOf('বিক্রেতা') === 0) {
+            return { el: target, name: 'বিক্রেতা' };
         }
-        if (label === 'রাইডার' || label.startsWith('রাইডার') || label === 'ডেলিভারি') {
-            return { node: clickable, roleName: 'রাইডার' };
+        if (label === 'রাইডার' || label.indexOf('রাইডার') === 0 || label === 'ডেলিভারি') {
+            return { el: target, name: 'রাইডার' };
         }
-        if (label === 'ক্রেতা' || label.startsWith('ক্রেতা')) {
-            return { node: clickable, roleName: 'ক্রেতা' };
+        if (label === 'ক্রেতা' || label.indexOf('ক্রেতা') === 0) {
+            return { el: target, name: 'ক্রেতা' };
         }
-
         return null;
     }
 
-    document.addEventListener('click', function (e) {
-        const found = matchRoleButton(e.target);
-        if (!found) return;
-
-        if (found.node.dataset.unlockOnce === '1') {
-            delete found.node.dataset.unlockOnce;
+    // Element.prototype.click র‍্যাপ করে সুরক্ষিত এক্সিকিউশন
+    const nativeElClick = HTMLElement.prototype.click;
+    HTMLElement.prototype.click = function () {
+        if (this && this._freshLockApproved === true) {
+            this._freshLockApproved = false;
+            return nativeElClick.apply(this, arguments);
+        }
+        const match = detectFourRoleName(this);
+        if (match) {
+            const self = this;
+            openLockPrompt(match.name, function () {
+                self._freshLockApproved = true;
+                nativeElClick.call(self);
+            });
             return;
         }
+        return nativeElClick.apply(this, arguments);
+    };
 
-        e.preventDefault();
-        e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === 'function') {
-            e.stopImmediatePropagation();
+    // সরাসরি প্রপার্টি onclick হ্যান্ডলার র‍্যাপ করা
+    function wrapRoleOnclickHandlers() {
+        const nodes = document.querySelectorAll('button, [role="button"], a, div, span');
+        for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            if (n._freshOnclickWrapped) continue;
+            const info = detectFourRoleName(n);
+            if (!info) continue;
+
+            n._freshOnclickWrapped = true;
+            const prevFn = n.onclick;
+            if (typeof prevFn === 'function') {
+                n.onclick = function (evt) {
+                    if (n._freshLockApproved === true) {
+                        n._freshLockApproved = false;
+                        return prevFn.call(this, evt);
+                    }
+                    const self = this;
+                    if (evt && evt.preventDefault) evt.preventDefault();
+                    openLockPrompt(info.name, function () {
+                        self._freshLockApproved = true;
+                        return prevFn.call(self, evt);
+                    });
+                };
+            }
         }
+    }
 
-        openFourRoleLock(found.roleName, function () {
-            found.node.dataset.unlockOnce = '1';
-            found.node.click();
-        });
-    }, true);
-})();
+    wrapRoleOnclickHandlers();
+    setInterval(wrapRoleOnclickHandlers, 800);
+
+    global.setActivePasscode = setActivePasscode;
+})(window);
 </script>
 
 
