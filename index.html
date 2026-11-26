@@ -6940,108 +6940,96 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const ROLE_PIN = '33433487'; // পাসওয়ার্ড এখান থেকে বদলাতে পারবে
+    const LOCK_PASS = "33433487"; // চাইলে এখান থেকে পাসওয়ার্ড পরিবর্তন করতে পারবে
 
-    const targetLabels = [
-        'ক্রেতা (ডেমো)',
-        'বিক্রেতা (ডেমো)',
-        'রাইডার (ডেমো)',
-        'অ্যাডমিন প্যানেল'
-    ];
+    const LOCKED_IDS = new Set([
+        "acc_buyer_1",
+        "acc_seller_1",
+        "acc_rider_1",
+        "admin_pin"
+    ]);
 
-    function askPinModal(labelText, onAllow) {
-        document.getElementById('rolePinModalBox')?.remove();
-
-        const wrap = document.createElement('div');
-        wrap.id = 'rolePinModalBox';
-        wrap.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.8);display:flex;align-items:center;justify-content:center;padding:16px;';
-
-        wrap.innerHTML = `
-            <div style="width:100%;max-width:320px;background:#fff;border-radius:16px;padding:18px;box-shadow:0 20px 45px rgba(0,0,0,0.45);font-family:sans-serif;">
-                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${labelText}</div>
-                <div style="font-size:12px;color:#475569;margin-bottom:10px;">পাসওয়ার্ড দিন:</div>
-                <input id="rolePinField" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড"
-                    style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
-                <div id="rolePinMsg" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
-                <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="rolePinCancelBtn" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
-                    <button id="rolePinConfirmBtn" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#fff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
-                </div>
-            </div>
-        `;
-
-        document.body.appendChild(wrap);
-
-        const field = document.getElementById('rolePinField');
-        const msg = document.getElementById('rolePinMsg');
-        const cancelBtn = document.getElementById('rolePinCancelBtn');
-        const okBtn = document.getElementById('rolePinConfirmBtn');
-
-        setTimeout(() => field?.focus(), 30);
-
-        const close = () => wrap.remove();
-        const check = () => {
-            if ((field?.value || '').trim() === ROLE_PIN) {
-                close();
-                onAllow();
-            } else {
-                if (msg) msg.textContent = 'ভুল পাসওয়ার্ড!';
-                if (field) {
-                    field.value = '';
-                    field.focus();
-                }
-            }
-        };
-
-        cancelBtn.addEventListener('click', close);
-        okBtn.addEventListener('click', check);
-        field.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                check();
-            } else if (e.key === 'Escape') {
-                close();
-            }
-        });
+    function askAdminLockPassword(btnLabel) {
+        const titlePart = btnLabel ? ` (${btnLabel})` : "";
+        const input = prompt(`🔒 শুধুমাত্র অ্যাডমিনের জন্য${titlePart}\nপাসওয়ার্ড দিন:`);
+        if (input === null) return false;
+        if (String(input).trim() !== String(LOCK_PASS).trim()) {
+            alert("❌ ভুল পাসওয়ার্ড! অ্যাক্সেস দেওয়া যাবে না।");
+            return false;
+        }
+        return true;
     }
 
-    function getMatchedRoleButton(el) {
-        if (!el || !el.closest) return null;
-        if (el.closest('#rolePinModalBox')) return null;
+    function getLockedButtonInfo(btn) {
+        if (!btn || btn.tagName !== "BUTTON") return null;
 
-        const btn = el.closest('#demoQuickSwitcherGrid button');
-        if (!btn) return null;
-
-        const text = (btn.innerText || btn.textContent || '').trim();
-        for (let i = 0; i < targetLabels.length; i++) {
-            if (text.includes(targetLabels[i])) {
-                return { btn: btn, label: targetLabels[i] };
-            }
+        const onclickCode = btn.getAttribute("onclick") || "";
+        const idMatch = onclickCode.match(/quickSwitchDemoAccount\(\s*['"]([^'"]+)['"]\s*\)/i);
+        if (idMatch && LOCKED_IDS.has(idMatch[1])) {
+            return {
+                accountId: idMatch[1],
+                label: (btn.innerText || btn.textContent || "").trim()
+            };
         }
+
+        const text = ((btn.innerText || btn.textContent || "") + " " + onclickCode).toLowerCase();
+
+        // 'এনআইডি বাকি' বাটন লক হবে না
+        if (text.includes("এনআইডি") || text.includes("nid") || text.includes("unverified")) {
+            return null;
+        }
+        if (text.includes("অ্যাডমিন") || text.includes("এডমিন") || text.includes("admin")) {
+            return { accountId: "admin_pin", label: "অ্যাডমিন" };
+        }
+        if (text.includes("ক্রেতা") || text.includes("buyer")) {
+            return { accountId: "acc_buyer_1", label: "ক্রেতা" };
+        }
+        if (text.includes("বিক্রেতা") || text.includes("seller")) {
+            return { accountId: "acc_seller_1", label: "বিক্রেতা" };
+        }
+        if (text.includes("রাইডার") || text.includes("rider")) {
+            return { accountId: "acc_rider_1", label: "রাইডার" };
+        }
+
         return null;
     }
 
-    document.addEventListener('click', function (e) {
-        const hit = getMatchedRoleButton(e.target);
-        if (!hit) return;
+    // সরাসরি quickSwitchDemoAccount কল হলেও পাসওয়ার্ড যাচাই করবে
+    const originalQuickSwitch = window.quickSwitchDemoAccount;
+    if (typeof originalQuickSwitch === "function") {
+        window.quickSwitchDemoAccount = function (accountId) {
+            if (LOCKED_IDS.has(accountId) && !askAdminLockPassword(accountId)) {
+                return false;
+            }
+            return originalQuickSwitch.apply(this, arguments);
+        };
+    }
 
-        if (hit.btn.dataset.pinAllowedOnce === '1') {
-            delete hit.btn.dataset.pinAllowedOnce;
-            return;
-        }
+    // বাটনে ক্লিক করলে আগে পাসওয়ার্ড চাইবে
+    document.addEventListener("click", function (e) {
+        const container = e.target && e.target.closest ? e.target.closest("#demoQuickSwitcherGrid") : null;
+        if (!container) return;
+
+        const btn = e.target.closest("button");
+        const info = getLockedButtonInfo(btn);
+        if (!info) return;
 
         e.preventDefault();
         e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        if (typeof e.stopImmediatePropagation === "function") {
+            e.stopImmediatePropagation();
+        }
 
-        askPinModal(hit.label, function () {
-            hit.btn.dataset.pinAllowedOnce = '1';
-            hit.btn.click();
-        });
+        if (!askAdminLockPassword(info.label)) {
+            return false;
+        }
+
+        if (typeof originalQuickSwitch === "function") {
+            return originalQuickSwitch.call(window, info.accountId);
+        }
     }, true);
 })();
 </script>
-
 
 
 
