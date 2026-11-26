@@ -6938,6 +6938,146 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    // চার বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন) পাসওয়ার্ড লক: 33433487
+    function digestPin(val) {
+        const s = String(val || '').trim();
+        let h1 = 0x811c9dc5;
+        let h2 = 0x01000193;
+        for (let i = 0; i < s.length; i++) {
+            const c = s.charCodeAt(i);
+            h1 ^= c;
+            h1 = Math.imul(h1, 0x01000193) >>> 0;
+            h2 = ((h2 << 5) - h2 + c + (i + 1) * 11) >>> 0;
+        }
+        return h1.toString(16).padStart(8, '0') + ':' + h2.toString(16).padStart(8, '0');
+    }
+
+    // পাসওয়ার্ড বদলাতে চাইলে নিজের পাসওয়ার্ড দিয়ে digestPin('নতুন_পাসওয়ার্ড') চালিয়ে
+    // যে মান পাবে, সেটি নিচের VALID_PIN_HASHES-এ বসাবে (ডিফল্ট: 33433487)
+    const PIN_DEFAULT = [51, 51, 52, 51, 51, 52, 56, 55]
+        .map(function (n) { return String.fromCharCode(n); })
+        .join('');
+
+    const VALID_PIN_HASHES = [digestPin(PIN_DEFAULT)];
+
+    function checkFourRolePin(inputPin) {
+        return VALID_PIN_HASHES.indexOf(digestPin(inputPin)) !== -1;
+    }
+
+    function askRoleAccessModal(roleName, onOk) {
+        const prev = document.getElementById('fourRoleAccessModal');
+        if (prev) prev.remove();
+
+        const box = document.createElement('div');
+        box.id = 'fourRoleAccessModal';
+        box.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(15,23,42,0.75);display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        box.innerHTML = `
+            <div style="width:100%;max-width:320px;background:#ffffff;border-radius:16px;padding:18px;box-shadow:0 18px 40px rgba(0,0,0,0.35);font-family:sans-serif;">
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${roleName} লক</div>
+                <div style="font-size:12px;color:#475569;margin-bottom:10px;">পাসওয়ার্ড দিন:</div>
+                <input id="fourRolePinBox" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
+                    style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
+                <div id="fourRolePinFeedback" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button id="fourRoleCancelBtn" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;">বাতিল</button>
+                    <button id="fourRoleUnlockBtn" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;">খুলুন</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(box);
+        const inp = document.getElementById('fourRolePinBox');
+        const msg = document.getElementById('fourRolePinFeedback');
+        const cancelBtn = document.getElementById('fourRoleCancelBtn');
+        const unlockBtn = document.getElementById('fourRoleUnlockBtn');
+
+        setTimeout(function () {
+            if (inp) inp.focus();
+        }, 30);
+
+        function closeIt() {
+            box.remove();
+        }
+
+        function submitPin() {
+            const val = inp ? inp.value : '';
+            if (checkFourRolePin(val)) {
+                closeIt();
+                if (typeof onOk === 'function') onOk();
+            } else {
+                if (msg) msg.textContent = 'পাসওয়ার্ড সঠিক নয়!';
+                if (inp) {
+                    inp.value = '';
+                    inp.focus();
+                }
+            }
+        }
+
+        cancelBtn.addEventListener('click', closeIt);
+        unlockBtn.addEventListener('click', submitPin);
+        inp.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submitPin();
+            } else if (e.key === 'Escape') {
+                closeIt();
+            }
+        });
+    }
+
+    function detectRoleTarget(el) {
+        if (!el || !el.closest) return null;
+        if (el.closest('#fourRoleAccessModal, input, textarea, select, form, [id*="nid" i], [class*="nid" i], [id*="ad" i], [class*="ad" i]')) {
+            return null;
+        }
+        const node = el.closest('button, [role="button"], .role-btn, .demo-btn, [onclick]');
+        if (!node) return null;
+
+        const txt = (node.innerText || node.textContent || '').trim();
+        if (!txt || txt.length > 24) return null;
+        if (/এনআইডি|nid|বিজ্ঞাপন|অ্যাড|ছবি|আপলোড|জমা|submit|save|সেভ/i.test(txt)) return null;
+
+        if (txt === 'অ্যাডমিন' || txt === 'এডমিন' || txt.indexOf('অ্যাডমিন') === 0 || txt.indexOf('এডমিন') === 0) {
+            return { el: node, label: 'অ্যাডমিন' };
+        }
+        if (txt === 'বিক্রেতা' || txt.indexOf('বিক্রেতা') === 0) {
+            return { el: node, label: 'বিক্রেতা' };
+        }
+        if (txt === 'রাইডার' || txt.indexOf('রাইডার') === 0 || txt === 'ডেলিভারি') {
+            return { el: node, label: 'রাইডার' };
+        }
+        if (txt === 'ক্রেতা' || txt.indexOf('ক্রেতা') === 0) {
+            return { el: node, label: 'ক্রেতা' };
+        }
+        return null;
+    }
+
+    document.addEventListener('click', function (e) {
+        const hit = detectRoleTarget(e.target);
+        if (!hit) return;
+
+        if (hit.el.dataset.pinOnceOk === '1') {
+            delete hit.el.dataset.pinOnceOk;
+            return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') {
+            e.stopImmediatePropagation();
+        }
+
+        askRoleAccessModal(hit.label, function () {
+            hit.el.dataset.pinOnceOk = '1';
+            hit.el.click();
+        });
+    }, true);
+})();
+</script>
+
 
 </body>
 	</html>
