@@ -5887,7 +5887,144 @@
     }, true);
 })();
 
+// ১. পণ্য যোগ করার ফাংশন (Document -> document ফিক্স + রিফ্রেশ সেভ + ই-বাজার আপডেট)
+function handleAddProductSubmit(e) {
+    e.preventDefault();
+    if (!ensureVerifiedForAction('পণ্য যোগ করা')) return;
 
+    const u = state.currentUser;
+    if (!u || u.role !== 'seller') {
+        return showToast('শুধুমাত্র বিক্রেতা পণ্য যোগ করতে পারেন!', '🔒');
+    }
+
+    const acc = state.accounts.find(a => a.id === u.id) || u;
+    const pkgActive = isSellerPackageCurrentlyActive(acc);
+    const usedPhotos = Number(acc.uploadedPhotosCount || 0);
+    const hasCustomPhoto = Boolean(state.newProductImg);
+
+    if (hasCustomPhoto && !pkgActive && usedPhotos >= FREE_PHOTO_LIMIT) {
+        return showToast(`ফ্রি ${toBn(FREE_PHOTO_LIMIT)}টি ছবির সীমা শেষ! প্যাকেজ নিন।`, '⚠️');
+    }
+
+    const name = (document.getElementById('prodNameInput')?.value || '').trim();
+    const category = document.getElementById('prodCategoryInput')?.value || 'মাছ';
+    const price = Math.max(1, Number(document.getElementById('prodPriceInput')?.value) || 0);
+    const unit = (document.getElementById('prodUnitInput')?.value || '').trim() || 'কেজি';
+    const stock = Math.max(0, Number(document.getElementById('prodStockInput')?.value) || 0);
+    const desc = (document.getElementById('prodDescInput')?.value || '').trim();
+
+    if (!name || price <= 0) {
+        return showToast('পণ্যের নাম ও সঠিক মূল্য লিখুন!', '⚠️');
+    }
+
+    const selfPayment = !state.newProductHasRider ? {
+        bkash: (document.getElementById('sellerSelfBkash')?.value || '').trim(),
+        nagad: (document.getElementById('sellerSelfNagad')?.value || '').trim(),
+        rocket: (document.getElementById('sellerSelfRocket')?.value || '').trim(),
+        bank: (document.getElementById('sellerSelfBank')?.value || '').trim()
+    } : null;
+
+    const newProd = {
+        id: 'PRD-' + Date.now() + '-' + Math.floor(100 + Math.random() * 900),
+        name,
+        category,
+        price,
+        unit,
+        stock,
+        hiddenBySeller: false,
+        desc: desc || 'তাজা ও মানসম্মত বাজারের পণ্য।',
+        img: hasCustomPhoto ? state.newProductImg : getCategoryFallbackImg(category),
+        sellerId: u.id,
+        sellerName: u.name,
+        hasRider: Boolean(state.newProductHasRider),
+        sellerPayment: selfPayment
+    };
+
+    if (!Array.isArray(state.products)) state.products = [];
+    state.products.unshift(newProd);
+
+    if (hasCustomPhoto && !pkgActive) {
+        acc.uploadedPhotosCount = usedPhotos + 1;
+        state.currentUser.uploadedPhotosCount = acc.uploadedPhotosCount;
+    }
+    if (selfPayment) {
+        acc.selfPayment = selfPayment;
+        state.currentUser.selfPayment = selfPayment;
+    }
+
+    recordHistoryEntry({
+        category: 'নতুন পণ্য প্রকাশ',
+        title: `${u.name} "${name}" (${formatMoney(price)}/${unit}) প্রকাশ করেছেন`,
+        actor: u.name,
+        amount: price,
+        decision: 'accepted',
+        userIds: [u.id]
+    });
+
+    const formEl = document.getElementById('addProductForm');
+    if (formEl) formEl.reset();
+    if (typeof clearProdImage === 'function') clearProdImage();
+
+    saveState();
+    syncAllUI();
+    if (typeof renderProductsGrid === 'function') renderProductsGrid();
+    if (typeof renderAddProductTab === 'function') renderAddProductTab();
+
+    triggerMobileFrontNotification(
+        'নতুন পণ্য প্রকাশিত হয়েছে',
+        `"${name}" এখন 🛒 ই-বাজারে দেখা যাচ্ছে।`,
+        'alert'
+    );
+}
+
+// ২. বিক্রেতার পণ্য অফ/অন (স্টক থাকলে বা না থাকলে সবার সামনে দেখানো/লুকানো)
+function toggleProductVisibility(productId) {
+    const u = state.currentUser;
+    const prod = state.products.find(p => p.id === productId);
+    if (!prod) return;
+    if (!isAdminActive() && prod.sellerId !== u.id) {
+        return showToast('শুধুমাত্র এই পণ্যের বিক্রেতাই স্ট্যাটাস পরিবর্তন করতে পারবেন!', '🔒');
+    }
+
+    prod.hiddenBySeller = !Boolean(prod.hiddenBySeller);
+    saveState();
+    syncAllUI();
+    showToast(
+        prod.hiddenBySeller
+            ? `"${prod.name}" অফ করা হয়েছে — এখন ক্রেতা বা অন্যদের সামনে যাবে না`
+            : `"${prod.name}" অন করা হয়েছে — এখন সবাই দেখতে পাবে`,
+        prod.hiddenBySeller ? '🙈' : '👁️'
+    );
+}
+
+// ৩. বিক্রেতার পণ্য ডিলিট করার ফাংশন
+function deleteSellerProduct(productId) {
+    const u = state.currentUser;
+    const idx = state.products.findIndex(p => p.id === productId);
+    if (idx === -1) return;
+    const prod = state.products[idx];
+
+    if (!isAdminActive() && prod.sellerId !== u.id) {
+        return showToast('শুধুমাত্র এই পণ্যের বিক্রেতাই পণ্য ডিলিট করতে পারবেন!', '🔒');
+    }
+
+    state.products.splice(idx, 1);
+    state.cart = state.cart.filter(c => c.productId !== productId);
+
+    recordHistoryEntry({
+        category: 'পণ্য ডিলিট',
+        title: `${u.name} "${prod.name}" পণ্যটি ডিলিট করেছেন`,
+        actor: u.name,
+        amount: prod.price || 0,
+        decision: 'rejected',
+        reason: 'বিক্রেতা কর্তৃক পণ্য ডিলিট করা হয়েছে',
+        userIds: [u.id]
+    });
+
+    saveState();
+    syncAllUI();
+    triggerMobileFrontNotification('পণ্য ডিলিট হয়েছে', `"${prod.name}" তালিকা থেকে মুছে ফেলা হয়েছে।`, 'alert');
+}
 </script>
 </body>
 	</html>
