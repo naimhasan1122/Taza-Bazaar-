@@ -6940,106 +6940,105 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const LOCK_PIN = '33433487'; // চাইলে এখান থেকে পাসওয়ার্ড বদলাও
+    const ROLE_PIN = '33433487'; // পাসওয়ার্ড এখান থেকে বদলাতে পারবে
 
-    const ROLE_LABEL = {
-        buyer: 'ক্রেতা (ডেমো)',
-        seller: 'বিক্রেতা (ডেমো)',
-        rider: 'রাইডার (ডেমো)',
-        admin: 'অ্যাডমিন প্যানেল'
-    };
+    const targetLabels = [
+        'ক্রেতা (ডেমো)',
+        'বিক্রেতা (ডেমো)',
+        'রাইডার (ডেমো)',
+        'অ্যাডমিন প্যানেল'
+    ];
 
-    function askPin(roleKey, onSuccess) {
-        document.getElementById('fourRolePinOverlay')?.remove();
+    function askPinModal(labelText, onAllow) {
+        document.getElementById('rolePinModalBox')?.remove();
 
-        const overlay = document.createElement('div');
-        overlay.id = 'fourRolePinOverlay';
-        overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.8);display:flex;align-items:center;justify-content:center;padding:16px;';
+        const wrap = document.createElement('div');
+        wrap.id = 'rolePinModalBox';
+        wrap.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.8);display:flex;align-items:center;justify-content:center;padding:16px;';
 
-        const title = ROLE_LABEL[roleKey] || roleKey;
-        overlay.innerHTML = `
+        wrap.innerHTML = `
             <div style="width:100%;max-width:320px;background:#fff;border-radius:16px;padding:18px;box-shadow:0 20px 45px rgba(0,0,0,0.45);font-family:sans-serif;">
-                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${title}</div>
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${labelText}</div>
                 <div style="font-size:12px;color:#475569;margin-bottom:10px;">পাসওয়ার্ড দিন:</div>
-                <input id="fourRolePinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড"
+                <input id="rolePinField" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড"
                     style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
-                <div id="fourRolePinErr" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
+                <div id="rolePinMsg" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="fourRolePinCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
-                    <button id="fourRolePinOk" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#fff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
+                    <button id="rolePinCancelBtn" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
+                    <button id="rolePinConfirmBtn" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#fff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
                 </div>
             </div>
         `;
 
-        document.body.appendChild(overlay);
+        document.body.appendChild(wrap);
 
-        const input = document.getElementById('fourRolePinInput');
-        const err = document.getElementById('fourRolePinErr');
-        const cancelBtn = document.getElementById('fourRolePinCancel');
-        const okBtn = document.getElementById('fourRolePinOk');
+        const field = document.getElementById('rolePinField');
+        const msg = document.getElementById('rolePinMsg');
+        const cancelBtn = document.getElementById('rolePinCancelBtn');
+        const okBtn = document.getElementById('rolePinConfirmBtn');
 
-        setTimeout(() => input?.focus(), 30);
+        setTimeout(() => field?.focus(), 30);
 
-        const close = () => overlay.remove();
-        const verify = () => {
-            if ((input?.value || '').trim() === String(LOCK_PIN).trim()) {
+        const close = () => wrap.remove();
+        const check = () => {
+            if ((field?.value || '').trim() === ROLE_PIN) {
                 close();
-                onSuccess();
+                onAllow();
             } else {
-                if (err) err.textContent = 'ভুল পাসওয়ার্ড!';
-                if (input) {
-                    input.value = '';
-                    input.focus();
+                if (msg) msg.textContent = 'ভুল পাসওয়ার্ড!';
+                if (field) {
+                    field.value = '';
+                    field.focus();
                 }
             }
         };
 
         cancelBtn.addEventListener('click', close);
-        okBtn.addEventListener('click', verify);
-        input.addEventListener('keydown', (e) => {
+        okBtn.addEventListener('click', check);
+        field.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
-                verify();
+                check();
             } else if (e.key === 'Escape') {
                 close();
             }
         });
     }
 
-    function bindFourButtons() {
-        const grid = document.getElementById('demoQuickSwitcherGrid');
-        if (!grid) return;
+    function getMatchedRoleButton(el) {
+        if (!el || !el.closest) return null;
+        if (el.closest('#rolePinModalBox')) return null;
 
-        grid.querySelectorAll('button').forEach((btn) => {
-            if (btn.dataset.pinLockedBound === '1') return;
-            const rawAttr = btn.getAttribute('onclick') || '';
-            const match = rawAttr.match(/openLockedDemoRole\(\s*['"]?(buyer|seller|rider|admin)['"]?\s*\)/i);
-            if (!match) return;
+        const btn = el.closest('#demoQuickSwitcherGrid button');
+        if (!btn) return null;
 
-            const roleKey = match[1].toLowerCase();
-            btn.dataset.pinLockedBound = '1';
-            btn.removeAttribute('onclick');
-            btn.onclick = null;
+        const text = (btn.innerText || btn.textContent || '').trim();
+        for (let i = 0; i < targetLabels.length; i++) {
+            if (text.includes(targetLabels[i])) {
+                return { btn: btn, label: targetLabels[i] };
+            }
+        }
+        return null;
+    }
 
-            btn.addEventListener('click', function (ev) {
-                ev.preventDefault();
-                ev.stopPropagation();
-                if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+    document.addEventListener('click', function (e) {
+        const hit = getMatchedRoleButton(e.target);
+        if (!hit) return;
 
-                askPin(roleKey, function () {
-                    if (typeof window.openLockedDemoRole === 'function') {
-                        window.openLockedDemoRole(roleKey);
-                    }
-                });
-            }, true);
+        if (hit.btn.dataset.pinAllowedOnce === '1') {
+            delete hit.btn.dataset.pinAllowedOnce;
+            return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+
+        askPinModal(hit.label, function () {
+            hit.btn.dataset.pinAllowedOnce = '1';
+            hit.btn.click();
         });
-    }
-
-    bindFourButtons();
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', bindFourButtons);
-    }
-    setInterval(bindFourButtons, 500);
+    }, true);
 })();
 </script>
 
