@@ -7623,18 +7623,9 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const FB_CONFIG = {
-        apiKey: "AIzaSyCbaHWzP342aM454Qw2U3lAv7aw3K0FMPg",
-        authDomain: "taza-bazar-62c60.firebaseapp.com",
-        projectId: "taza-bazar-62c60",
-        storageBucket: "taza-bazar-62c60.firebasestorage.app",
-        messagingSenderId: "959164783804",
-        appId: "1:959164783804:web:c36e1c34be5257f1b404b9"
-    };
+    const DEL_VAULT_KEY = "taza_bazar_deleted_prods_v4";
 
-    const LIVE_STORE_KEY = "taza_bazar_live_guard_v3";
-
-    function getSt() {
+    function getAppSt() {
         if (typeof state !== "undefined" && state && typeof state === "object") {
             window.state = state;
             return state;
@@ -7642,16 +7633,16 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return window.state && typeof window.state === "object" ? window.state : null;
     }
 
-    function isAdminUser() {
+    function isAdminRole() {
         try {
             if (typeof isAdminActive === "function" && isAdminActive()) return true;
         } catch (_) {}
-        const st = getSt();
+        const st = getAppSt();
         const u = st && st.currentUser;
         return Boolean(u && (u.role === "admin" || u.isAdmin === true));
     }
 
-    function showNotice(msg, icon) {
+    function showAlertToast(msg, icon) {
         if (typeof window.showToast === "function") {
             window.showToast(msg, icon || "ℹ️");
         } else {
@@ -7659,442 +7650,173 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         }
     }
 
-    function getDeletedProdSet(st) {
+    function getDeletedIds(st) {
         const set = new Set(Array.isArray(st && st.deletedProductIds) ? st.deletedProductIds : []);
         try {
-            const raw = localStorage.getItem(LIVE_STORE_KEY);
+            const raw = localStorage.getItem(DEL_VAULT_KEY);
             if (raw) {
                 const parsed = JSON.parse(raw);
-                if (parsed && Array.isArray(parsed.deletedProductIds)) {
-                    parsed.deletedProductIds.forEach(function (id) { set.add(id); });
+                if (parsed && Array.isArray(parsed.ids)) {
+                    parsed.ids.forEach(function (id) { set.add(id); });
                 }
             }
         } catch (_) {}
         return set;
     }
 
-    function persistDeletedLists(st) {
-        if (!st) return;
-        const delProds = getDeletedProdSet(st);
-        st.deletedProductIds = Array.from(delProds);
-        if (Array.isArray(st.products)) {
-            st.products = st.products.filter(function (p) { return p && !delProds.has(p.id); });
+    function saveDeletedIds(st, set) {
+        const arr = Array.from(set);
+        if (st) {
+            st.deletedProductIds = arr;
+            if (Array.isArray(st.products)) {
+                st.products = st.products.filter(function (p) { return p && !set.has(p.id); });
+            }
         }
         try {
-            localStorage.setItem(LIVE_STORE_KEY, JSON.stringify({
-                deletedProductIds: st.deletedProductIds,
-                deletedAccountIds: st.deletedAccountIds || [],
-                updatedAt: Date.now()
-            }));
+            localStorage.setItem(DEL_VAULT_KEY, JSON.stringify({ ids: arr, updatedAt: Date.now() }));
         } catch (_) {}
     }
 
-    // ডিলিট বাটন যেন সত্যিই পণ্য মুছে ফেলে এবং ফিরে না আসে
+    function removeProductCardFromDOM(productId) {
+        if (!productId) return;
+        document.querySelectorAll(`[onclick*="${productId}"]`).forEach(function (el) {
+            const card = el.closest("div.rounded-2xl, div.rounded-xl, div.border, article, li");
+            if (card && card.id !== "historyList" && card.id !== "adminModalBodyContainer") {
+                card.remove();
+            }
+        });
+    }
+
+    // ১. পণ্য ডিলিট ফাংশন: সাথে সাথে চলে যাবে এবং মালিকের হিস্ট্রিতে রেকর্ড থাকবে
     window.deleteSellerProduct = function (productId) {
-        const st = getSt();
+        const st = getAppSt();
         if (!st || !Array.isArray(st.products)) return;
         const u = st.currentUser;
-        const prod = st.products.find(function (p) { return p && p.id === productId; });
-        if (!prod || !u) return;
+        const idx = st.products.findIndex(function (p) { return p && p.id === productId; });
+        if (idx === -1 || !u) return;
 
-        if (!isAdminUser() && prod.sellerId !== u.id) {
-            return showNotice("শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন ডিলিট করতে পারবেন!", "🔒");
+        const prod = st.products[idx];
+        const ownerId = prod.sellerId || u.id;
+
+        if (!isAdminRole() && ownerId !== u.id) {
+            return showAlertToast("শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন পণ্য ডিলিট করতে পারবেন!", "🔒");
         }
 
-        const delSet = getDeletedProdSet(st);
+        const delSet = getDeletedIds(st);
         delSet.add(productId);
-        st.deletedProductIds = Array.from(delSet);
 
-        st.products = st.products.filter(function (p) { return p && p.id !== productId; });
+        st.products.splice(idx, 1);
+        st.products = st.products.filter(function (p) { return p && !delSet.has(p.id); });
+
         if (Array.isArray(st.cart)) {
             st.cart = st.cart.filter(function (c) { return c && c.productId !== productId; });
         }
 
-        if (typeof window.recordHistoryEntry === "function") {
-            window.recordHistoryEntry({
-                category: "পণ্য ডিলিট",
-                title: `${u.name || "ব্যবহারকারী"} "${prod.name}" পণ্যটি ডিলিট করেছেন`,
-                actor: u.name || "ব্যবহারকারী",
-                amount: prod.price || 0,
-                decision: "rejected",
-                reason: "পণ্য ডিলিট করা হয়েছে",
-                userIds: [prod.sellerId, u.id].filter(Boolean)
-            });
-        }
+        saveDeletedIds(st, delSet);
 
-        persistDeletedLists(st);
+        const priceVal = prod.price || 0;
+        const histEntry = {
+            id: "DEL-HIST-" + Date.now() + "-" + Math.floor(100 + Math.random() * 900),
+            category: "পণ্য ডিলিট",
+            title: `"${prod.name}" পণ্যটি ডিলিট করা হয়েছিল (${u.name || "বিক্রেতা"})`,
+            actor: u.name || "বিক্রেতা",
+            sellerId: ownerId,
+            ownerId: ownerId,
+            targetUserId: ownerId,
+            userIds: [ownerId],
+            privateToOwner: true,
+            amount: priceVal,
+            decision: "rejected",
+            reason: "পণ্য ডিলিট করা হয়েছে",
+            timestamp: (typeof nowBnTime === "function") ? `আজ, ${nowBnTime()}` : new Date().toLocaleTimeString()
+        };
+
+        if (!Array.isArray(st.history)) st.history = [];
+        st.history.unshift(histEntry);
 
         if (typeof window.saveState === "function") {
             window.saveState();
         }
+
+        removeProductCardFromDOM(productId);
+
         if (typeof window.syncAllUI === "function") {
             window.syncAllUI();
         } else {
             if (typeof window.renderProductsGrid === "function") window.renderProductsGrid();
             if (typeof window.renderAddProductTab === "function") window.renderAddProductTab();
+            if (typeof window.renderHistoryTab === "function") window.renderHistoryTab();
         }
 
         if (typeof window.triggerMobileFrontNotification === "function") {
-            window.triggerMobileFrontNotification("পণ্য ডিলিট হয়েছে", `"${prod.name}" মুছে ফেলা হয়েছে।`, "alert");
+            window.triggerMobileFrontNotification(
+                "পণ্য ডিলিট হয়েছে",
+                `"${prod.name}" ডিলিট হয়ে গেছে এবং আপনার হিস্ট্রিতে সংরক্ষিত আছে।`,
+                "alert"
+            );
         } else {
-            showNotice(`"${prod.name}" ডিলিট হয়েছে`, "🗑️");
+            showAlertToast(`"${prod.name}" ডিলিট হয়ে গেছে`, "🗑️");
         }
     };
 
-    // অফ/অন বাটন ফাংশন
-    window.toggleProductVisibility = function (productId) {
-        const st = getSt();
-        if (!st || !Array.isArray(st.products)) return;
-        const u = st.currentUser;
-        const prod = st.products.find(function (p) { return p && p.id === productId; });
-        if (!prod || !u) return;
+    // ২. হিস্ট্রি সেকশনে ডিলিট হিস্ট্রি শুধু যার প্রোডাক্ট সেই দেখবে (ও অ্যাডমিন)
+    function filterHistoryForCurrentUser() {
+        const st = getAppSt();
+        const me = st && st.currentUser;
+        const histBox = document.getElementById("historyList");
+        if (!me || !histBox) return;
 
-        if (!isAdminUser() && prod.sellerId !== u.id) {
-            return showNotice("শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন অফ/অন করতে পারবেন!", "🔒");
-        }
-
-        prod.hiddenBySeller = !Boolean(prod.hiddenBySeller);
-        if (typeof window.saveState === "function") {
-            window.saveState();
-        }
-        if (typeof window.syncAllUI === "function") {
-            window.syncAllUI();
-        }
-        showNotice(
-            prod.hiddenBySeller ? `"${prod.name}" অফ করা হয়েছে` : `"${prod.name}" অন করা হয়েছে`,
-            prod.hiddenBySeller ? "🙈" : "👁️"
-        );
-    };
-
-    function shrinkImage(dataUrl) {
-        return new Promise(function (resolve) {
-            if (!dataUrl || typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) {
-                return resolve(dataUrl || "");
-            }
-            if (dataUrl.length < 150000) return resolve(dataUrl);
-            const img = new Image();
-            img.onload = function () {
-                try {
-                    const maxDim = 600;
-                    let w = img.width || maxDim;
-                    let h = img.height || maxDim;
-                    if (w > h && w > maxDim) {
-                        h = Math.round((h * maxDim) / w);
-                        w = maxDim;
-                    } else if (h >= w && h > maxDim) {
-                        w = Math.round((w * maxDim) / h);
-                        h = maxDim;
-                    }
-                    const c = document.createElement("canvas");
-                    c.width = w;
-                    c.height = h;
-                    c.getContext("2d").drawImage(img, 0, 0, w, h);
-                    const out = c.toDataURL("image/jpeg", 0.7);
-                    resolve(out.length < dataUrl.length ? out : dataUrl);
-                } catch (_) {
-                    resolve(dataUrl);
-                }
-            };
-            img.onerror = function () { resolve(dataUrl); };
-            img.src = dataUrl;
-        });
-    }
-
-    async function packImages(val) {
-        if (typeof val === "string") {
-            return val.startsWith("data:image/") ? await shrinkImage(val) : val;
-        }
-        if (Array.isArray(val)) {
-            const res = [];
-            for (let i = 0; i < val.length; i++) res.push(await packImages(val[i]));
-            return res;
-        }
-        if (val && typeof val === "object") {
-            const obj = {};
-            const keys = Object.keys(val);
-            for (let i = 0; i < keys.length; i++) {
-                obj[keys[i]] = await packImages(val[keys[i]]);
-            }
-            return obj;
-        }
-        return val;
-    }
-
-    function mergeArraysRespectingDeletes(localArr, remoteArr, deletedSet) {
-        const map = new Map();
-        const r = Array.isArray(remoteArr) ? remoteArr : [];
-        const l = Array.isArray(localArr) ? localArr : [];
-
-        r.concat(l).forEach(function (item, idx) {
-            if (!item || typeof item !== "object") return;
-            if (item.id && deletedSet && deletedSet.has(item.id)) return;
-            const key = item.id || [
-                item.category || "",
-                item.title || "",
-                item.name || "",
-                item.phone || "",
-                item.timestamp || item.time || idx
-            ].join("_");
-            const prev = map.get(key);
-            const merged = prev ? Object.assign({}, prev, item) : JSON.parse(JSON.stringify(item));
-            if (!merged.img && prev && prev.img) merged.img = prev.img;
-            map.set(key, merged);
+        const amAdmin = isAdminRole();
+        const delHistories = (Array.isArray(st.history) ? st.history : []).filter(function (h) {
+            if (!h) return false;
+            const isProdDelete = h.category === "পণ্য ডিলিট" || h.privateToOwner === true;
+            if (!isProdDelete) return false;
+            const ownerId = h.ownerId || h.sellerId || h.targetUserId || (Array.isArray(h.userIds) ? h.userIds[0] : null);
+            return amAdmin || ownerId === me.id;
         });
 
-        return Array.from(map.values());
-    }
-
-    function startLiveAllActivities() {
-        if (!window.firebase || !window.firebase.firestore) return;
-        if (!firebase.apps.length) {
-            firebase.initializeApp(FB_CONFIG);
-        }
-
-        const db = firebase.firestore();
-        const mainDoc = db.collection("taza_bazar_live_room").doc("all_live_activities");
-        const mediaDoc = db.collection("taza_bazar_live_room").doc("all_live_media");
-
-        let fromCloud = false;
-        let timer = null;
-        let lastHash = "";
-        let seenNotifs = new Set();
-
-        function notifyMe() {
-            const st = getSt();
-            if (!st || !st.currentUser) return;
-            const me = st.currentUser;
-            const amAdmin = isAdminUser();
-            const notifs = Array.isArray(st.notifications) ? st.notifications : [];
-
-            notifs.slice(0, 25).forEach(function (n, idx) {
-                if (!n || typeof n !== "object") return;
-                const k = String(n.id || (n.title + "_" + (n.time || n.createdAt || idx)));
-                if (seenNotifs.has(k)) return;
-
-                const adminOnly = Boolean(n.forAdmin || n.targetRole === "admin" || n.adminOnly);
-                const userIds = Array.isArray(n.userIds) ? n.userIds : null;
-                const tUser = n.targetUserId || n.userId || n.toUserId || null;
-                const tRole = n.targetRole || n.role || null;
-
-                let match = false;
-                if (adminOnly) match = amAdmin;
-                else if (userIds) match = userIds.includes(me.id);
-                else if (tUser) match = tUser === me.id;
-                else if (tRole) match = me.role === tRole;
-                else match = n.actorId === me.id || n.public === true;
-
-                if (match) {
-                    seenNotifs.add(k);
-                    const title = n.title || "নতুন লাইভ আপডেট";
-                    const body = n.message || n.body || n.text || "নতুন কার্যক্রম সম্পন্ন হয়েছে।";
-                    if (typeof window.triggerMobileFrontNotification === "function") {
-                        window.triggerMobileFrontNotification(title, body, n.type || "alert");
-                    } else if (typeof window.showToast === "function") {
-                        window.showToast(`${title}: ${body}`, "🔔");
-                    }
-                }
-            });
-        }
-
-        async function pushLiveNow() {
-            if (fromCloud) return;
-            const st = getSt();
-            if (!st) return;
-            persistDeletedLists(st);
-
-            try {
-                const copy = JSON.parse(JSON.stringify(st));
-                delete copy.currentUser;
-                const packed = await packImages(copy);
-                const u = st.currentUser || {};
-
-                const bundle = {
-                    accounts: packed.accounts || [],
-                    products: packed.products || [],
-                    orders: packed.orders || [],
-                    notifications: packed.notifications || [],
-                    ads: packed.ads || [],
-                    packageRequests: packed.packageRequests || [],
-                    withdrawalRequests: packed.withdrawalRequests || [],
-                    passwordResetRequests: packed.passwordResetRequests || [],
-                    riderDeposits: packed.riderDeposits || [],
-                    registrationRequests: packed.registrationRequests || [],
-                    history: packed.history || [],
-                    deletedProductIds: packed.deletedProductIds || [],
-                    deletedAccountIds: packed.deletedAccountIds || [],
-                    settings: packed.settings || {},
-                    liveLocations: packed.liveLocations || {},
-                    admobImpressions: Number(packed.admobImpressions || 0)
-                };
-
-                const productPhotos = {};
-                (bundle.products || []).forEach(function (p) {
-                    if (p && p.id && p.img) productPhotos[p.id] = p.img;
+        // অন্য কারো প্রোডাক্ট ডিলিট হিস্ট্রি DOM থেকে লুকানো
+        histBox.querySelectorAll("div, li, article").forEach(function (el) {
+            const txt = (el.textContent || "");
+            if (txt.includes("পণ্য ডিলিট") || txt.includes("ডিলিট করা হয়েছিল")) {
+                const allowed = delHistories.some(function (dh) {
+                    return dh.title && txt.includes(dh.title.slice(0, 18));
                 });
-
-                if (new Blob([JSON.stringify(bundle)]).size <= 850000) {
-                    await mainDoc.set({
-                        bundle: bundle,
-                        updatedAt: Date.now(),
-                        byId: u.id || "guest",
-                        byRole: u.role || "guest"
-                    }, { merge: true });
-                }
-
-                await mediaDoc.set({
-                    productPhotos: productPhotos,
-                    updatedAt: Date.now()
-                }, { merge: true });
-            } catch (e) {
-                console.warn("Live push failed:", e && e.message ? e.message : e);
-            }
-        }
-
-        function queueLivePush() {
-            if (fromCloud) return;
-            clearTimeout(timer);
-            timer = setTimeout(pushLiveNow, 200);
-        }
-
-        if (typeof window.saveState === "function") {
-            const origSave = window.saveState;
-            window.saveState = function () {
-                const st = getSt();
-                if (st) persistDeletedLists(st);
-                const out = origSave.apply(this, arguments);
-                queueLivePush();
-                return out;
-            };
-        }
-
-        mediaDoc.onSnapshot(function (mSnap) {
-            if (!mSnap.exists) return;
-            const st = getSt();
-            if (!st || !Array.isArray(st.products)) return;
-            const delProds = getDeletedProdSet(st);
-            const photos = (mSnap.data() || {}).productPhotos;
-            if (!photos || typeof photos !== "object") return;
-
-            let updated = false;
-            st.products.forEach(function (p) {
-                if (p && p.id && !delProds.has(p.id) && photos[p.id] && p.img !== photos[p.id]) {
-                    p.img = photos[p.id];
-                    updated = true;
-                }
-            });
-
-            if (updated && typeof window.syncAllUI === "function") {
-                fromCloud = true;
-                try {
-                    window.syncAllUI();
-                } finally {
-                    setTimeout(function () { fromCloud = false; }, 120);
+                if (!allowed && el.children.length <= 4) {
+                    el.style.display = "none";
                 }
             }
-        }, function () {});
-
-        mainDoc.onSnapshot(function (snap) {
-            if (!snap.exists) return;
-            const st = getSt();
-            if (!st) return;
-
-            const remote = (snap.data() || {}).bundle;
-            if (!remote || typeof remote !== "object") return;
-
-            const hash = JSON.stringify(remote);
-            if (hash === lastHash) return;
-            lastHash = hash;
-
-            fromCloud = true;
-            try {
-                const keepUser = st.currentUser ? JSON.parse(JSON.stringify(st.currentUser)) : null;
-
-                const delProds = new Set([
-                    ...Array.from(getDeletedProdSet(st)),
-                    ...(Array.isArray(remote.deletedProductIds) ? remote.deletedProductIds : [])
-                ]);
-                const delAccs = new Set([
-                    ...(Array.isArray(st.deletedAccountIds) ? st.deletedAccountIds : []),
-                    ...(Array.isArray(remote.deletedAccountIds) ? remote.deletedAccountIds : [])
-                ]);
-
-                st.deletedProductIds = Array.from(delProds);
-                st.deletedAccountIds = Array.from(delAccs);
-
-                st.accounts = mergeArraysRespectingDeletes(st.accounts, remote.accounts, delAccs);
-                st.products = mergeArraysRespectingDeletes(st.products, remote.products, delProds);
-                st.orders = mergeArraysRespectingDeletes(st.orders, remote.orders, null);
-                st.notifications = mergeArraysRespectingDeletes(st.notifications, remote.notifications, null);
-                st.ads = mergeArraysRespectingDeletes(st.ads, remote.ads, null);
-                st.packageRequests = mergeArraysRespectingDeletes(st.packageRequests, remote.packageRequests, null);
-                st.withdrawalRequests = mergeArraysRespectingDeletes(st.withdrawalRequests, remote.withdrawalRequests, null);
-                st.passwordResetRequests = mergeArraysRespectingDeletes(st.passwordResetRequests, remote.passwordResetRequests, null);
-                st.riderDeposits = mergeArraysRespectingDeletes(st.riderDeposits, remote.riderDeposits, null);
-                st.registrationRequests = mergeArraysRespectingDeletes(st.registrationRequests, remote.registrationRequests, null);
-                st.history = mergeArraysRespectingDeletes(st.history, remote.history, null);
-
-                if (remote.settings && typeof remote.settings === "object") {
-                    st.settings = Object.assign({}, st.settings || {}, remote.settings);
-                }
-                if (remote.liveLocations && typeof remote.liveLocations === "object") {
-                    st.liveLocations = Object.assign({}, st.liveLocations || {}, remote.liveLocations);
-                }
-                if (typeof remote.admobImpressions === "number") {
-                    st.admobImpressions = Math.max(Number(st.admobImpressions || 0), remote.admobImpressions);
-                }
-
-                if (keepUser && Array.isArray(st.accounts)) {
-                    const fresh = st.accounts.find(function (a) {
-                        return (keepUser.id && a.id === keepUser.id) || (keepUser.phone && a.phone === keepUser.phone);
-                    });
-                    st.currentUser = fresh ? Object.assign({}, keepUser, fresh) : keepUser;
-                }
-
-                if (typeof window.syncAllUI === "function") {
-                    window.syncAllUI();
-                }
-
-                notifyMe();
-            } finally {
-                setTimeout(function () {
-                    fromCloud = false;
-                }, 150);
-            }
-        }, function (err) {
-            console.warn("Live snapshot error:", err && err.message ? err.message : err);
         });
-
-        setTimeout(function () {
-            mainDoc.get().then(function (snap) {
-                if (!snap.exists) {
-                    pushLiveNow();
-                }
-            }).catch(function () {});
-        }, 700);
     }
 
-    function initSdkAndLive() {
-        const st = getSt();
-        if (st) persistDeletedLists(st);
-
-        if (window.firebase && window.firebase.firestore) {
-            startLiveAllActivities();
-            return;
-        }
-        const s1 = document.createElement("script");
-        s1.src = "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js";
-        s1.onload = function () {
-            const s2 = document.createElement("script");
-            s2.src = "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js";
-            s2.onload = startLiveAllActivities;
-            document.body.appendChild(s2);
+    const origRenderHistory = window.renderHistoryTab;
+    if (typeof origRenderHistory === "function") {
+        window.renderHistoryTab = function () {
+            const out = origRenderHistory.apply(this, arguments);
+            filterHistoryForCurrentUser();
+            return out;
         };
-        document.body.appendChild(s1);
     }
 
-    window.addEventListener("DOMContentLoaded", function () {
-        setTimeout(initSdkAndLive, 250);
-    });
+    // ৩. ডিলিট হওয়া পণ্য যেন কোনো রেন্ডারে বা সিঙ্কে ফিরে না আসে
+    const origSyncUI = window.syncAllUI;
+    if (typeof origSyncUI === "function") {
+        window.syncAllUI = function () {
+            const st = getAppSt();
+            if (st) {
+                saveDeletedIds(st, getDeletedIds(st));
+            }
+            const out = origSyncUI.apply(this, arguments);
+            filterHistoryForCurrentUser();
+            return out;
+        };
+    }
+
+    setTimeout(function () {
+        const st = getAppSt();
+        if (st) saveDeletedIds(st, getDeletedIds(st));
+        filterHistoryForCurrentUser();
+    }, 300);
 })();
 </script>
 
