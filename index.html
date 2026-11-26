@@ -6940,124 +6940,114 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    // =========================================================================
-    // নতুন রোল লক ফাংশন: ক্রেতা (ডেমো), বিক্রেতা (ডেমো), রাইডার (ডেমো), অ্যাডমিন প্যানেল
-    // ডিফল্ট পাসওয়ার্ড: 33433487
-    // পাসওয়ার্ড বদলাতে চাইলে নিচের ROLE_SECRET_PASS বদলে দাও
-    // =========================================================================
-    let ROLE_SECRET_PASS = [51, 51, 52, 51, 51, 52, 56, 55]
-        .map(function (n) { return String.fromCharCode(n); })
-        .join('');
+    // চার বাটন লক: ক্রেতা (ডেমো), বিক্রেতা (ডেমো), রাইডার (ডেমো), অ্যাডমিন প্যানেল
+    // ডিফল্ট পাসওয়ার্ড: 33433487 (বদলাতে চাইলে নিচের PIN_CODE বদলে দাও)
+    const PIN_CODE = '33433487';
 
-    function updateRoleLockPassword(newPass) {
-        if (typeof newPass === 'string' && newPass.trim().length > 0) {
-            ROLE_SECRET_PASS = newPass.trim();
-        }
-    }
-
-    const ROLE_LABELS = {
+    const ROLE_NAMES = {
         buyer: 'ক্রেতা (ডেমো)',
         seller: 'বিক্রেতা (ডেমো)',
         rider: 'রাইডার (ডেমো)',
         admin: 'অ্যাডমিন প্যানেল'
     };
 
-    function promptForRolePassword(roleKey, onAuthorized) {
-        const oldBox = document.getElementById('lockedFourRolePrompt');
+    function askPinBeforeRole(roleKey, afterOk) {
+        const oldBox = document.getElementById('rolePinGateModal');
         if (oldBox) oldBox.remove();
 
-        const label = ROLE_LABELS[roleKey] || String(roleKey || 'রোল');
+        const title = ROLE_NAMES[roleKey] || roleKey;
+        const modal = document.createElement('div');
+        modal.id = 'rolePinGateModal';
+        modal.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.8);display:flex;align-items:center;justify-content:center;padding:16px;';
 
-        const backdrop = document.createElement('div');
-        backdrop.id = 'lockedFourRolePrompt';
-        backdrop.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(2,6,23,0.82);display:flex;align-items:center;justify-content:center;padding:16px;';
-
-        backdrop.innerHTML = `
-            <div style="width:100%;max-width:320px;background:#ffffff;border-radius:16px;padding:18px;box-shadow:0 22px 50px rgba(0,0,0,0.45);font-family:sans-serif;">
-                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${label} লক</div>
+        modal.innerHTML = `
+            <div style="width:100%;max-width:320px;background:#fff;border-radius:16px;padding:18px;box-shadow:0 20px 45px rgba(0,0,0,0.45);font-family:sans-serif;">
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${title}</div>
                 <div style="font-size:12px;color:#475569;margin-bottom:10px;">পাসওয়ার্ড দিন:</div>
-                <input id="lockedRolePassInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
+                <input id="rolePinGateInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড"
                     style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
-                <div id="lockedRolePassError" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
+                <div id="rolePinGateErr" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="lockedRoleCancelBtn" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
-                    <button id="lockedRoleConfirmBtn" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
+                    <button id="rolePinGateCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
+                    <button id="rolePinGateOk" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#fff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
                 </div>
             </div>
         `;
 
-        document.body.appendChild(backdrop);
+        document.body.appendChild(modal);
+        const input = document.getElementById('rolePinGateInput');
+        const err = document.getElementById('rolePinGateErr');
+        const cancelBtn = document.getElementById('rolePinGateCancel');
+        const okBtn = document.getElementById('rolePinGateOk');
 
-        const inputEl = document.getElementById('lockedRolePassInput');
-        const errEl = document.getElementById('lockedRolePassError');
-        const cancelEl = document.getElementById('lockedRoleCancelBtn');
-        const confirmEl = document.getElementById('lockedRoleConfirmBtn');
+        setTimeout(() => input && input.focus(), 30);
 
-        setTimeout(function () {
-            if (inputEl) inputEl.focus();
-        }, 30);
-
-        function closePrompt() {
-            backdrop.remove();
-        }
-
-        function checkPassword() {
-            const val = (inputEl && inputEl.value ? inputEl.value : '').trim();
-            if (val === ROLE_SECRET_PASS) {
-                closePrompt();
-                if (typeof onAuthorized === 'function') {
-                    onAuthorized();
-                }
+        const close = () => modal.remove();
+        const verify = () => {
+            const val = (input?.value || '').trim();
+            if (val === PIN_CODE) {
+                close();
+                if (typeof afterOk === 'function') afterOk();
             } else {
-                if (errEl) errEl.textContent = 'ভুল পাসওয়ার্ড! আবার চেষ্টা করুন।';
-                if (inputEl) {
-                    inputEl.value = '';
-                    inputEl.focus();
+                if (err) err.textContent = 'ভুল পাসওয়ার্ড!';
+                if (input) {
+                    input.value = '';
+                    input.focus();
                 }
             }
-        }
+        };
 
-        cancelEl.addEventListener('click', closePrompt);
-        confirmEl.addEventListener('click', checkPassword);
-        inputEl.addEventListener('keydown', function (ev) {
-            if (ev.key === 'Enter') {
-                ev.preventDefault();
-                checkPassword();
-            } else if (ev.key === 'Escape') {
-                closePrompt();
+        cancelBtn.addEventListener('click', close);
+        okBtn.addEventListener('click', verify);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                verify();
+            } else if (e.key === 'Escape') {
+                close();
             }
         });
     }
 
-    let _originalDemoRoleFn = typeof window.openLockedDemoRole === 'function' ? window.openLockedDemoRole : null;
+    function extractRoleFromAttr(el) {
+        if (!el || !el.getAttribute) return null;
+        const attr = el.getAttribute('onclick') || '';
+        const match = attr.match(/openLockedDemoRole\(\s*['"]?(buyer|seller|rider|admin)['"]?\s*\)/i);
+        return match ? match[1].toLowerCase() : null;
+    }
 
-    function guardedOpenLockedDemoRole(roleKey) {
-        const args = arguments;
-        const ctx = this;
-        promptForRolePassword(roleKey, function () {
-            if (typeof _originalDemoRoleFn === 'function') {
-                return _originalDemoRoleFn.apply(ctx, args);
-            }
+    function detachInlineRoleHandlers() {
+        const btns = document.querySelectorAll('#demoQuickSwitcherGrid button, button[onclick*="openLockedDemoRole"]');
+        btns.forEach((btn) => {
+            if (btn.dataset.roleGateBound === '1') return;
+            const roleKey = extractRoleFromAttr(btn);
+            if (!roleKey) return;
+
+            btn.dataset.roleGateBound = '1';
+            btn.dataset.lockedRoleKey = roleKey;
+            btn.removeAttribute('onclick');
+            btn.onclick = null;
         });
     }
 
-    try {
-        Object.defineProperty(window, 'openLockedDemoRole', {
-            configurable: true,
-            get: function () {
-                return guardedOpenLockedDemoRole;
-            },
-            set: function (newFn) {
-                if (typeof newFn === 'function' && newFn !== guardedOpenLockedDemoRole) {
-                    _originalDemoRoleFn = newFn;
-                }
+    detachInlineRoleHandlers();
+    setInterval(detachInlineRoleHandlers, 500);
+
+    document.addEventListener('click', function (e) {
+        const btn = e.target?.closest?.('button[data-locked-role-key]');
+        if (!btn) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+
+        const roleKey = btn.dataset.lockedRoleKey;
+        askPinBeforeRole(roleKey, function () {
+            if (typeof window.openLockedDemoRole === 'function') {
+                window.openLockedDemoRole(roleKey);
             }
         });
-    } catch (e) {
-        window.openLockedDemoRole = guardedOpenLockedDemoRole;
-    }
-
-    window.updateRoleLockPassword = updateRoleLockPassword;
+    }, true);
 })();
 </script>
 
