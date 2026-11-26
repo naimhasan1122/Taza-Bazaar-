@@ -7337,6 +7337,289 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    const HISTORY_VAULT_KEY = "taza_bazar_all_history_permanent_v2";
+    const APP_VAULT_KEY = "taza_bazar_full_vault_permanent_v2";
+
+    function getState() {
+        if (typeof state !== "undefined" && state && typeof state === "object") {
+            window.state = state;
+            return state;
+        }
+        return window.state && typeof window.state === "object" ? window.state : null;
+    }
+
+    function isAdminSession() {
+        try {
+            if (typeof isAdminActive === "function" && isAdminActive()) return true;
+        } catch (_) {}
+        const st = getState();
+        const u = st && st.currentUser;
+        return Boolean(u && (u.role === "admin" || u.isAdmin === true));
+    }
+
+    function toast(msg, icon) {
+        if (typeof window.showToast === "function") {
+            window.showToast(msg, icon || "ℹ️");
+        } else {
+            alert(msg);
+        }
+    }
+
+    function makeEntryKey(item, idx) {
+        if (!item || typeof item !== "object") return "idx_" + idx;
+        if (item.id) return String(item.id);
+        return [
+            item.category || "",
+            item.title || "",
+            item.actor || "",
+            item.amount || 0,
+            item.timestamp || item.time || ""
+        ].join("|");
+    }
+
+    function mergeHistoryEntries(currentArr, savedArr) {
+        const map = new Map();
+        const listA = Array.isArray(savedArr) ? savedArr : [];
+        const listB = Array.isArray(currentArr) ? currentArr : [];
+
+        listA.concat(listB).forEach(function (entry, i) {
+            if (!entry || typeof entry !== "object") return;
+            const key = makeEntryKey(entry, i);
+            const prev = map.get(key);
+            map.set(key, prev ? Object.assign({}, prev, entry) : JSON.parse(JSON.stringify(entry)));
+        });
+
+        return Array.from(map.values());
+    }
+
+    function mergeById(currentArr, savedArr) {
+        const map = new Map();
+        (Array.isArray(savedArr) ? savedArr : []).forEach(function (item) {
+            if (item && item.id) {
+                map.set(item.id, JSON.parse(JSON.stringify(item)));
+            }
+        });
+        (Array.isArray(currentArr) ? currentArr : []).forEach(function (item) {
+            if (item && item.id) {
+                const prev = map.get(item.id);
+                map.set(item.id, prev ? Object.assign({}, prev, item) : JSON.parse(JSON.stringify(item)));
+            }
+        });
+        return Array.from(map.values());
+    }
+
+    function syncPermanentVault() {
+        const st = getState();
+        if (!st) return;
+
+        try {
+            const rawHist = localStorage.getItem(HISTORY_VAULT_KEY);
+            const savedHist = rawHist ? JSON.parse(rawHist) : [];
+            st.history = mergeHistoryEntries(st.history, savedHist);
+            localStorage.setItem(HISTORY_VAULT_KEY, JSON.stringify(st.history));
+
+            const rawVault = localStorage.getItem(APP_VAULT_KEY);
+            const savedVault = rawVault ? JSON.parse(rawVault) : null;
+
+            if (savedVault && typeof savedVault === "object") {
+                const deletedSet = new Set(Array.isArray(savedVault.deletedAccountIds) ? savedVault.deletedAccountIds : []);
+                if (Array.isArray(st.deletedAccountIds)) {
+                    st.deletedAccountIds.forEach(function (id) { deletedSet.add(id); });
+                }
+                st.deletedAccountIds = Array.from(deletedSet);
+
+                st.accounts = mergeById(st.accounts, savedVault.accounts).filter(function (a) {
+                    return a && !deletedSet.has(a.id);
+                });
+                st.orders = mergeById(st.orders, savedVault.orders);
+                st.products = mergeById(st.products, savedVault.products);
+                st.notifications = mergeById(st.notifications, savedVault.notifications);
+                st.ads = mergeById(st.ads, savedVault.ads);
+                st.packageRequests = mergeById(st.packageRequests, savedVault.packageRequests);
+                st.withdrawalRequests = mergeById(st.withdrawalRequests, savedVault.withdrawalRequests);
+                st.passwordResetRequests = mergeById(st.passwordResetRequests, savedVault.passwordResetRequests);
+                st.riderDeposits = mergeById(st.riderDeposits, savedVault.riderDeposits);
+                st.registrationRequests = mergeById(st.registrationRequests, savedVault.registrationRequests);
+                st.history = mergeHistoryEntries(st.history, savedVault.history);
+            }
+
+            localStorage.setItem(APP_VAULT_KEY, JSON.stringify({
+                accounts: st.accounts || [],
+                products: st.products || [],
+                orders: st.orders || [],
+                notifications: st.notifications || [],
+                ads: st.ads || [],
+                packageRequests: st.packageRequests || [],
+                withdrawalRequests: st.withdrawalRequests || [],
+                passwordResetRequests: st.passwordResetRequests || [],
+                riderDeposits: st.riderDeposits || [],
+                registrationRequests: st.registrationRequests || [],
+                history: st.history || [],
+                deletedAccountIds: st.deletedAccountIds || [],
+                settings: st.settings || {},
+                savedAt: Date.now()
+            }));
+        } catch (_) {}
+    }
+
+    // নতুন হিস্ট্রি যুক্ত হলে তা যেন সবসময় সংরক্ষিত থাকে
+    if (typeof window.recordHistoryEntry === "function") {
+        const origRecordHistory = window.recordHistoryEntry;
+        window.recordHistoryEntry = function (entry) {
+            const st = getState();
+            const beforeLen = st && Array.isArray(st.history) ? st.history.length : 0;
+            const res = origRecordHistory.apply(this, arguments);
+            const afterSt = getState();
+            if (afterSt && Array.isArray(afterSt.history) && afterSt.history.length === beforeLen && entry) {
+                const normalized = Object.assign({
+                    id: "HST-" + Date.now() + "-" + Math.floor(100 + Math.random() * 900),
+                    timestamp: (typeof nowBnTime === "function") ? `আজ, ${nowBnTime()}` : new Date().toLocaleTimeString()
+                }, entry);
+                afterSt.history.unshift(normalized);
+            }
+            syncPermanentVault();
+            return res;
+        };
+    }
+
+    if (typeof window.loadState === "function") {
+        const origLoad = window.loadState;
+        window.loadState = function () {
+            const res = origLoad.apply(this, arguments);
+            syncPermanentVault();
+            return res;
+        };
+    }
+
+    if (typeof window.saveState === "function") {
+        const origSave = window.saveState;
+        window.saveState = function () {
+            syncPermanentVault();
+            const res = origSave.apply(this, arguments);
+            syncPermanentVault();
+            return res;
+        };
+    }
+
+    // শুধুমাত্র অ্যাডমিন ইউজার ডিলিট করতে পারবেন (হিস্ট্রি অক্ষত থাকবে)
+    window.adminDeleteUserAccount = function (accountId) {
+        if (!isAdminSession()) {
+            return toast("শুধুমাত্র অ্যাডমিন ইউজার ডিলিট করতে পারবেন!", "🔒");
+        }
+        const st = getState();
+        if (!st || !Array.isArray(st.accounts)) return;
+
+        const target = st.accounts.find(function (a) { return a.id === accountId; });
+        if (!target) return toast("ইউজার পাওয়া যায়নি!", "⚠️");
+        if (target.role === "admin" || target.id === "acc_admin_1") {
+            return toast("মূল অ্যাডমিন অ্যাকাউন্ট ডিলিট করা যাবে না!", "⚠️");
+        }
+
+        const ok = confirm(`"${target.name}" (${target.phone || target.id}) অ্যাকাউন্টটি ডিলিট করতে চান?`);
+        if (!ok) return;
+
+        st.deletedAccountIds = Array.isArray(st.deletedAccountIds) ? st.deletedAccountIds : [];
+        if (!st.deletedAccountIds.includes(accountId)) {
+            st.deletedAccountIds.push(accountId);
+        }
+        st.accounts = st.accounts.filter(function (a) { return a.id !== accountId; });
+
+        if (typeof window.recordHistoryEntry === "function") {
+            window.recordHistoryEntry({
+                category: "ইউজার ডিলিট",
+                title: `অ্যাডমিন "${target.name}" (${target.phone || ""}) অ্যাকাউন্ট ডিলিট করেছেন`,
+                actor: "অ্যাডমিন",
+                amount: 0,
+                decision: "rejected",
+                reason: "অ্যাডমিন কর্তৃক ইউজার ডিলিট করা হয়েছে",
+                userIds: [accountId]
+            });
+        }
+
+        if (typeof window.saveState === "function") {
+            window.saveState();
+        } else {
+            syncPermanentVault();
+        }
+        if (typeof window.syncAllUI === "function") {
+            window.syncAllUI();
+        }
+        toast(`"${target.name}" ডিলিট করা হয়েছে`, "🗑️");
+    };
+
+    function renderUsersListForAdmin() {
+        if (!isAdminSession()) return;
+        const st = getState();
+        if (!st || !Array.isArray(st.accounts)) return;
+
+        const host =
+            document.getElementById("adminModalBodyContainer") ||
+            document.getElementById("adminPanelBodyContainer") ||
+            document.getElementById("inlineAdminPanelHost");
+        if (!host) return;
+
+        const prevCard = document.getElementById("adminUsersDirectoryPanel");
+        if (prevCard) prevCard.remove();
+
+        const users = st.accounts.filter(function (a) { return a && a.role !== "admin"; });
+        const buyers = users.filter(function (a) { return a.role === "buyer"; });
+        const sellers = users.filter(function (a) { return a.role === "seller"; });
+        const riders = users.filter(function (a) { return a.role === "rider"; });
+        const bn = typeof window.toBn === "function" ? window.toBn : function (x) { return x; };
+
+        const card = document.createElement("div");
+        card.id = "adminUsersDirectoryPanel";
+        card.className = "p-3.5 rounded-2xl bg-slate-800/90 border border-slate-700 space-y-2.5 text-xs mt-3";
+
+        card.innerHTML = `
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-extrabold text-amber-300 text-sm">👥 ইউজার তালিকা (${bn(users.length)} জন)</span>
+                <div class="flex flex-wrap gap-1.5 text-[10px] font-bold">
+                    <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">ক্রেতা: ${bn(buyers.length)}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300">বিক্রেতা: ${bn(sellers.length)}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">রাইডার: ${bn(riders.length)}</span>
+                </div>
+            </div>
+            <div class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                ${users.length ? users.map(function (u) {
+                    const roleName = u.role === "seller" ? "বিক্রেতা" : (u.role === "rider" ? "রাইডার" : "ক্রেতা");
+                    const bal = (u.wallet && typeof u.wallet.balance !== "undefined") ? u.wallet.balance : 0;
+                    const balFmt = typeof window.formatMoney === "function" ? window.formatMoney(bal) : `${bal} ৳`;
+                    return `
+                        <div class="p-2.5 rounded-xl bg-slate-950/75 border border-slate-700 flex items-center justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="font-bold text-white truncate">${u.name || "নামহীন"} <span class="text-[10px] text-amber-300">(${roleName})</span></div>
+                                <div class="text-[10px] text-slate-400 truncate">মোবাইল: ${u.phone || "—"} • ওয়ালেট: ${balFmt}</div>
+                            </div>
+                            <button type="button" onclick="adminDeleteUserAccount('${u.id}')" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-extrabold shrink-0">
+                                ডিলিট
+                            </button>
+                        </div>
+                    `;
+                }).join("") : `<p class="text-slate-400">কোনো ইউজার অ্যাকাউন্ট নেই।</p>`}
+            </div>
+        `;
+
+        host.appendChild(card);
+    }
+
+    if (typeof window.renderAdminPanel === "function") {
+        const origAdminRender = window.renderAdminPanel;
+        window.renderAdminPanel = function () {
+            const out = origAdminRender.apply(this, arguments);
+            renderUsersListForAdmin();
+            return out;
+        };
+    }
+
+    setTimeout(function () {
+        syncPermanentVault();
+        renderUsersListForAdmin();
+    }, 300);
+})();
+</script>
 
 
 </body>
