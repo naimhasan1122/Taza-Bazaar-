@@ -5886,134 +5886,137 @@
         }, 15);
     }, true);
 })();
-window.addEventListener("error", function (e) {
-    alert("JS Error: " + e.message + " (Line: " + e.lineno + ")");
-});
 
 (function () {
-    // 1. রাইডার নিলে অ্যাডমিনের পেমেন্ট মেথড, না নিলে দোকানদারের পেমেন্ট মেথড অটো সেট
-    function syncRoutingPaymentMode() {
-        const riderRadios = Array.from(document.querySelectorAll('input[type="radio"], button, [data-routing], [data-delivery]'));
-        const textBlob = document.body ? document.body.innerText : "";
-        const isRiderSelected =
-            Boolean(document.querySelector('input[value*="rider" i]:checked')) ||
-            Boolean(document.querySelector('[data-routing*="rider" i].active, [data-delivery*="rider" i].active')) ||
-            textBlob.includes("রাইডার যুক্ত");
-
-        const adminPayInput = document.querySelector('#adminPaymentMethod, [name*="adminPayment" i], [data-admin-payment]');
-        const sellerPayBox = document.querySelector('#sellerPaymentBox, #sellerPaymentMethod, [name*="sellerPayment" i], [data-seller-payment]');
-
-        if (isRiderSelected) {
-            window.selectedPaymentOwner = "admin";
-            window.deliveryMode = "rider";
-            if (adminPayInput) {
-                adminPayInput.value = window.adminPaymentMethod || adminPayInput.value || "Admin Payment (Auto)";
-            }
-            if (sellerPayBox) {
-                sellerPayBox.style.display = "none";
-            }
-        } else {
-            window.selectedPaymentOwner = "seller";
-            window.deliveryMode = "direct";
-            if (sellerPayBox) {
-                sellerPayBox.style.display = "";
-            }
-        }
+    function readImgs(files) {
+        return Promise.all(
+            Array.from(files || []).map(
+                (f) =>
+                    new Promise((res) => {
+                        const r = new FileReader();
+                        r.onload = () => res(r.result);
+                        r.onerror = () => res(URL.createObjectURL(f));
+                        r.readAsDataURL(f);
+                    })
+            )
+        );
     }
 
-    // 2. ছবি নির্বাচন করলে অটোমেটিক অ্যাড ও প্রিভিউ আপডেট
-    function bindAutoImageAttach() {
-        const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
-        fileInputs.forEach((input) => {
-            if (input.dataset.autoBound === "1") return;
-            input.dataset.autoBound = "1";
-            input.addEventListener("change", function () {
-                const files = Array.from(input.files || []);
-                if (!files.length) return;
-                window.uploadedProductImages = window.uploadedProductImages || [];
-                files.forEach((f) => {
-                    const url = URL.createObjectURL(f);
-                    window.uploadedProductImages.push({ name: f.name, url: url, file: f });
-                });
-                const previewBox = document.querySelector('#imagePreview, #productImagePreview, .image-preview');
-                if (previewBox) {
-                    previewBox.innerHTML = window.uploadedProductImages
-                        .map((img) => `<img src="${img.url}" alt="${img.name}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;margin:4px;" />`)
-                        .join("");
-                }
-            });
+    function addToLists(item) {
+        [
+            window.products,
+            window.ebazarProducts,
+            window.allProducts,
+            window.items,
+            window.state && window.state.products
+        ].forEach((arr) => {
+            if (Array.isArray(arr)) arr.unshift(item);
         });
-    }
-
-    // 3. পণ্য পাবলিক করে ই-বাজারে পাঠানো
-    function publishProductToEbazar(e) {
-        syncRoutingPaymentMode();
-
-        const titleEl = document.querySelector('#productName, #itemName, [name*="name" i], [name*="title" i]');
-        const priceEl = document.querySelector('#productPrice, #itemPrice, [name*="price" i]');
-        const name = titleEl && titleEl.value.trim() ? titleEl.value.trim() : "নতুন ই-বাজার পণ্য";
-        const price = priceEl && priceEl.value.trim() ? priceEl.value.trim() : "0";
-
-        const newItem = {
-            id: "prod_" + Date.now(),
-            name: name,
-            price: price,
-            paymentOwner: window.selectedPaymentOwner || "seller",
-            deliveryMode: window.deliveryMode || "direct",
-            adminDeliveryFee: window.adminDeliveryFee || 0,
-            images: window.uploadedProductImages || [],
-            published: true,
-            createdAt: new Date().toISOString()
-        };
 
         try {
-            const existing = JSON.parse(localStorage.getItem("ebazarProducts") || "[]");
-            existing.unshift(newItem);
-            localStorage.setItem("ebazarProducts", JSON.stringify(existing));
-        } catch (err) {}
-
-        window.ebazarProducts = window.ebazarProducts || [];
-        window.ebazarProducts.unshift(newItem);
-
-        const listFns = ["renderEbazarProducts", "renderProducts", "loadProducts", "syncAllUI", "renderAll"];
-        listFns.forEach((fn) => {
-            if (typeof window[fn] === "function") {
-                try { window[fn](newItem); } catch (err) {}
-            }
-        });
-
-        const ebazarTabBtn = Array.from(document.querySelectorAll("button, a, [role='tab']")).find((el) =>
-            (el.innerText || "").includes("ই-বাজার")
-        );
-        if (ebazarTabBtn && e) {
-            setTimeout(() => {
-                if (typeof window.switchTab === "function") {
-                    window.switchTab("ebazar");
+            ["products", "ebazarProducts", "allProducts"].forEach((k) => {
+                const raw = localStorage.getItem(k);
+                if (raw) {
+                    const p = JSON.parse(raw);
+                    if (Array.isArray(p)) {
+                        p.unshift(item);
+                        localStorage.setItem(k, JSON.stringify(p));
+                    }
                 }
-            }, 80);
-        }
-
-        alert("✅ পণ্য ই-বাজারে পাবলিক করা হয়েছে!");
+            });
+        } catch (e) {}
     }
 
-document.addEventListener("change", syncRoutingPaymentMode, true);
-    document.addEventListener("click", function (e) {
-        syncRoutingPaymentMode();
-        const btn = e.target.closest("button, [role='button'], input[type='submit']");
-        if (!btn) return;
-        const txt = (btn.innerText || btn.value || "").trim();
-        if (txt.includes("ই-বাজারে পণ্য প্রকাশ করুন") || txt.includes("পণ্য প্রকাশ করুন")) {
-            e.preventDefault();
-            publishProductToEbazar(e);
-        }
-    }, true);
+    function showCardInEbazar(item) {
+        const pic = item.image || "";
+        const card = `
+            <div style="background:#fff;border-radius:16px;border:1px solid #e2e8f0;overflow:hidden;margin-bottom:14px;">
+                ${
+                    pic
+                        ? `<img src="${pic}" alt="${item.name}" style="width:100%;height:185px;object-fit:cover;display:block;" />`
+                        : `<div style="padding:24px;background:#0f766e;color:#fff;font-weight:700;text-align:center;">${item.name}</div>`
+                }
+                <div style="padding:12px 14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <strong style="font-size:15px;color:#0f172a;">${item.name}</strong>
+                        <span style="font-weight:700;color:#047857;">৳ ${item.price}</span>
+                    </div>
+                    <div style="font-size:12px;color:#0f766e;margin-top:6px;font-weight:600;">
+                        ${item.deliveryMode === "rider" ? "রাইডার যুক্ত (অ্যাডমিন পেমেন্ট)" : "সরাসরি দোকান (বিক্রেতা পেমেন্ট)"}
+                    </div>
+                </div>
+            </div>
+        `;
 
-    document.addEventListener("DOMContentLoaded", function () {
-        syncRoutingPaymentMode();
-        bindAutoImageAttach();
-    });
-    syncRoutingPaymentMode();
-    bindAutoImageAttach();
+        const box = Array.from(
+            document.querySelectorAll("#ebazarList, #ebazarProducts, #productsGrid, #productList, [id*='ebazar' i], [id*='product' i]")
+        ).find((el) => el.children && el.children.length >= 1 && !el.closest("form"));
+
+        if (box) box.insertAdjacentHTML("afterbegin", card);
+    }
+
+    document.addEventListener(
+        "click",
+        async function (e) {
+            const btn = e.target.closest("button, [role='button'], input[type='submit']");
+            if (!btn) return;
+            const label = (btn.innerText || btn.value || "").trim();
+            if (!label.includes("ই-বাজারে পণ্য প্রকাশ করুন")) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            const visibleInputs = Array.from(document.querySelectorAll("input, textarea")).filter(
+                (el) => el.type !== "file" && el.type !== "hidden" && el.offsetParent !== null
+            );
+
+            const nameEl =
+                document.querySelector('#productName, #itemName, [name*="name" i], [placeholder*="নাম" i]') ||
+                visibleInputs[0];
+            const priceEl =
+                document.querySelector('#productPrice, #itemPrice, [name*="price" i], [placeholder*="মূল্য" i], [placeholder*="দাম" i]') ||
+                visibleInputs.find((el) => el.type === "number");
+
+            const name = (nameEl && nameEl.value && nameEl.value.trim()) || "নতুন পণ্য";
+            const price = (priceEl && priceEl.value && priceEl.value.trim()) || "0";
+
+            const fileInput = document.querySelector('input[type="file"]');
+            const imgs = fileInput && fileInput.files && fileInput.files.length ? await readImgs(fileInput.files) : [];
+            const isRider = Boolean(window.deliveryMode === "rider" || (document.body && document.body.innerText.includes("রাইডার যুক্ত")));
+
+            const item = {
+                id: "p_" + Date.now(),
+                name,
+                price,
+                image: imgs[0] || "",
+                images: imgs,
+                deliveryMode: isRider ? "rider" : "direct",
+                paymentOwner: isRider ? "admin" : "seller"
+            };
+
+            addToLists(item);
+
+            ["renderEbazar", "renderEbazarProducts", "renderProducts", "syncAllUI"].forEach((fn) => {
+                if (typeof window[fn] === "function") {
+                    try { window[fn](item); } catch (err) {}
+                }
+            });
+
+            showCardInEbazar(item);
+
+            alert("🎉 দারুণ! আপনার পণ্যটি ই-বাজারে সফলভাবে প্রকাশ হয়েছে।");
+
+            if (typeof window.switchTab === "function") {
+                window.switchTab("ebazar");
+            } else {
+                const tab = Array.from(document.querySelectorAll("button, a, [role='tab'], div, span")).find(
+                    (el) => (el.innerText || "").trim() === "ই-বাজার"
+                );
+                if (tab) tab.click();
+            }
+        },
+        true
+    );
 })();
 </script>
 </body>
