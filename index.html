@@ -7623,9 +7623,9 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const DEL_VAULT_KEY = "taza_bazar_deleted_prods_v4";
+    const DEL_PROD_KEY = "taza_bazar_deleted_prod_ids_v5";
 
-    function getAppSt() {
+    function getState() {
         if (typeof state !== "undefined" && state && typeof state === "object") {
             window.state = state;
             return state;
@@ -7633,16 +7633,16 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return window.state && typeof window.state === "object" ? window.state : null;
     }
 
-    function isAdminRole() {
+    function isAdmin() {
         try {
             if (typeof isAdminActive === "function" && isAdminActive()) return true;
         } catch (_) {}
-        const st = getAppSt();
+        const st = getState();
         const u = st && st.currentUser;
         return Boolean(u && (u.role === "admin" || u.isAdmin === true));
     }
 
-    function showAlertToast(msg, icon) {
+    function notify(msg, icon) {
         if (typeof window.showToast === "function") {
             window.showToast(msg, icon || "ℹ️");
         } else {
@@ -7650,173 +7650,279 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         }
     }
 
-    function getDeletedIds(st) {
+    function loadDeletedSet(st) {
         const set = new Set(Array.isArray(st && st.deletedProductIds) ? st.deletedProductIds : []);
         try {
-            const raw = localStorage.getItem(DEL_VAULT_KEY);
+            const raw = localStorage.getItem(DEL_PROD_KEY);
             if (raw) {
                 const parsed = JSON.parse(raw);
                 if (parsed && Array.isArray(parsed.ids)) {
-                    parsed.ids.forEach(function (id) { set.add(id); });
+                    parsed.ids.forEach(function (id) { set.add(String(id)); });
                 }
             }
         } catch (_) {}
         return set;
     }
 
-    function saveDeletedIds(st, set) {
+    function saveDeletedSet(st, set) {
         const arr = Array.from(set);
         if (st) {
             st.deletedProductIds = arr;
             if (Array.isArray(st.products)) {
-                st.products = st.products.filter(function (p) { return p && !set.has(p.id); });
+                st.products = st.products.filter(function (p) {
+                    return p && !set.has(String(p.id));
+                });
             }
         }
         try {
-            localStorage.setItem(DEL_VAULT_KEY, JSON.stringify({ ids: arr, updatedAt: Date.now() }));
+            localStorage.setItem(DEL_PROD_KEY, JSON.stringify({ ids: arr, updatedAt: Date.now() }));
         } catch (_) {}
     }
 
-    function removeProductCardFromDOM(productId) {
-        if (!productId) return;
-        document.querySelectorAll(`[onclick*="${productId}"]`).forEach(function (el) {
-            const card = el.closest("div.rounded-2xl, div.rounded-xl, div.border, article, li");
-            if (card && card.id !== "historyList" && card.id !== "adminModalBodyContainer") {
-                card.remove();
-            }
-        });
-    }
+    function forceRemoveProductFromEverywhereDOM(productId) {
+        const pid = String(productId || "");
+        if (!pid) return;
 
-    // ১. পণ্য ডিলিট ফাংশন: সাথে সাথে চলে যাবে এবং মালিকের হিস্ট্রিতে রেকর্ড থাকবে
-    window.deleteSellerProduct = function (productId) {
-        const st = getAppSt();
-        if (!st || !Array.isArray(st.products)) return;
-        const u = st.currentUser;
-        const idx = st.products.findIndex(function (p) { return p && p.id === productId; });
-        if (idx === -1 || !u) return;
-
-        const prod = st.products[idx];
-        const ownerId = prod.sellerId || u.id;
-
-        if (!isAdminRole() && ownerId !== u.id) {
-            return showAlertToast("শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন পণ্য ডিলিট করতে পারবেন!", "🔒");
-        }
-
-        const delSet = getDeletedIds(st);
-        delSet.add(productId);
-
-        st.products.splice(idx, 1);
-        st.products = st.products.filter(function (p) { return p && !delSet.has(p.id); });
-
-        if (Array.isArray(st.cart)) {
-            st.cart = st.cart.filter(function (c) { return c && c.productId !== productId; });
-        }
-
-        saveDeletedIds(st, delSet);
-
-        const priceVal = prod.price || 0;
-        const histEntry = {
-            id: "DEL-HIST-" + Date.now() + "-" + Math.floor(100 + Math.random() * 900),
-            category: "পণ্য ডিলিট",
-            title: `"${prod.name}" পণ্যটি ডিলিট করা হয়েছিল (${u.name || "বিক্রেতা"})`,
-            actor: u.name || "বিক্রেতা",
-            sellerId: ownerId,
-            ownerId: ownerId,
-            targetUserId: ownerId,
-            userIds: [ownerId],
-            privateToOwner: true,
-            amount: priceVal,
-            decision: "rejected",
-            reason: "পণ্য ডিলিট করা হয়েছে",
-            timestamp: (typeof nowBnTime === "function") ? `আজ, ${nowBnTime()}` : new Date().toLocaleTimeString()
-        };
-
-        if (!Array.isArray(st.history)) st.history = [];
-        st.history.unshift(histEntry);
-
-        if (typeof window.saveState === "function") {
-            window.saveState();
-        }
-
-        removeProductCardFromDOM(productId);
-
-        if (typeof window.syncAllUI === "function") {
-            window.syncAllUI();
-        } else {
-            if (typeof window.renderProductsGrid === "function") window.renderProductsGrid();
-            if (typeof window.renderAddProductTab === "function") window.renderAddProductTab();
-            if (typeof window.renderHistoryTab === "function") window.renderHistoryTab();
-        }
-
-        if (typeof window.triggerMobileFrontNotification === "function") {
-            window.triggerMobileFrontNotification(
-                "পণ্য ডিলিট হয়েছে",
-                `"${prod.name}" ডিলিট হয়ে গেছে এবং আপনার হিস্ট্রিতে সংরক্ষিত আছে।`,
-                "alert"
-            );
-        } else {
-            showAlertToast(`"${prod.name}" ডিলিট হয়ে গেছে`, "🗑️");
-        }
-    };
-
-    // ২. হিস্ট্রি সেকশনে ডিলিট হিস্ট্রি শুধু যার প্রোডাক্ট সেই দেখবে (ও অ্যাডমিন)
-    function filterHistoryForCurrentUser() {
-        const st = getAppSt();
-        const me = st && st.currentUser;
-        const histBox = document.getElementById("historyList");
-        if (!me || !histBox) return;
-
-        const amAdmin = isAdminRole();
-        const delHistories = (Array.isArray(st.history) ? st.history : []).filter(function (h) {
-            if (!h) return false;
-            const isProdDelete = h.category === "পণ্য ডিলিট" || h.privateToOwner === true;
-            if (!isProdDelete) return false;
-            const ownerId = h.ownerId || h.sellerId || h.targetUserId || (Array.isArray(h.userIds) ? h.userIds[0] : null);
-            return amAdmin || ownerId === me.id;
-        });
-
-        // অন্য কারো প্রোডাক্ট ডিলিট হিস্ট্রি DOM থেকে লুকানো
-        histBox.querySelectorAll("div, li, article").forEach(function (el) {
-            const txt = (el.textContent || "");
-            if (txt.includes("পণ্য ডিলিট") || txt.includes("ডিলিট করা হয়েছিল")) {
-                const allowed = delHistories.some(function (dh) {
-                    return dh.title && txt.includes(dh.title.slice(0, 18));
-                });
-                if (!allowed && el.children.length <= 4) {
-                    el.style.display = "none";
+        // যেকোনো কার্ড/রো যার ভেতরে এই productId বা ডিলিট/অফ বাটন আছে
+        document.querySelectorAll("button, [onclick]").forEach(function (el) {
+            const oc = el.getAttribute("onclick") || "";
+            if (oc.includes(pid)) {
+                const card = el.closest("div.rounded-2xl, div.rounded-xl, div.border, tr, article, li");
+                if (card && !["historyList", "adminModalBodyContainer", "adminPanelBodyContainer"].includes(card.id)) {
+                    card.remove();
                 }
             }
         });
     }
 
-    const origRenderHistory = window.renderHistoryTab;
-    if (typeof origRenderHistory === "function") {
-        window.renderHistoryTab = function () {
-            const out = origRenderHistory.apply(this, arguments);
-            filterHistoryForCurrentUser();
-            return out;
+    function refreshAllProductAndAdminViews() {
+        const st = getState();
+        if (st) {
+            saveDeletedSet(st, loadDeletedSet(st));
+        }
+        if (typeof window.saveState === "function") {
+            window.saveState();
+        }
+        if (typeof window.renderProductsGrid === "function") {
+            try { window.renderProductsGrid(); } catch (_) {}
+        }
+        if (typeof window.renderAddProductTab === "function") {
+            try { window.renderAddProductTab(); } catch (_) {}
+        }
+        if (typeof window.renderHistoryTab === "function") {
+            try { window.renderHistoryTab(); } catch (_) {}
+        }
+        if (isAdmin() && typeof window.renderAdminPanel === "function") {
+            try { window.renderAdminPanel(); } catch (_) {}
+        }
+    }
+
+    // ১. শক্তিশালী পণ্য ডিলিট ফাংশন (সব জায়গা থেকে সাথে সাথে সরাবে)
+    window.deleteSellerProduct = function (productId) {
+        const st = getState();
+        if (!st) return notify("অ্যাপ স্টেট পাওয়া যায়নি!", "⚠️");
+        if (!Array.isArray(st.products)) st.products = [];
+
+        const pid = String(productId || "");
+        const u = st.currentUser || {};
+        const idx = st.products.findIndex(function (p) { return p && String(p.id) === pid; });
+
+        const prod = idx !== -1 ? st.products[idx] : { id: pid, name: "পণ্য", sellerId: u.id, price: 0 };
+        const ownerId = prod.sellerId || u.id;
+
+        if (!isAdmin() && ownerId && u.id && ownerId !== u.id) {
+            return notify("শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন পণ্য ডিলিট করতে পারবেন!", "🔒");
+        }
+
+        const delSet = loadDeletedSet(st);
+        delSet.add(pid);
+
+        if (idx !== -1) {
+            st.products.splice(idx, 1);
+        }
+        st.products = st.products.filter(function (p) { return p && !delSet.has(String(p.id)); });
+
+        if (Array.isArray(st.cart)) {
+            st.cart = st.cart.filter(function (c) { return c && String(c.productId) !== pid; });
+        }
+
+        saveDeletedSet(st, delSet);
+
+        if (!Array.isArray(st.history)) st.history = [];
+        st.history.unshift({
+            id: "DEL-" + Date.now() + "-" + Math.floor(100 + Math.random() * 900),
+            category: "পণ্য ডিলিট",
+            title: `"${prod.name || "পণ্য"}" পণ্যটি ডিলিট করা হয়েছিল (${u.name || "বিক্রেতা"})`,
+            actor: u.name || "বিক্রেতা",
+            sellerId: ownerId,
+            ownerId: ownerId,
+            targetUserId: ownerId,
+            userIds: [ownerId].filter(Boolean),
+            privateToOwner: true,
+            amount: prod.price || 0,
+            decision: "rejected",
+            reason: "পণ্য ডিলিট করা হয়েছে",
+            timestamp: (typeof nowBnTime === "function") ? `আজ, ${nowBnTime()}` : new Date().toLocaleTimeString()
+        });
+
+        forceRemoveProductFromEverywhereDOM(pid);
+        refreshAllProductAndAdminViews();
+        forceRemoveProductFromEverywhereDOM(pid);
+
+        if (typeof window.triggerMobileFrontNotification === "function") {
+            window.triggerMobileFrontNotification(
+                "পণ্য ডিলিট হয়েছে",
+                `"${prod.name || "পণ্য"}" ডিলিট হয়ে গেছে এবং আপনার হিস্ট্রিতে জমা আছে।`,
+                "alert"
+            );
+        } else {
+            notify(`"${prod.name || "পণ্য"}" ডিলিট হয়ে গেছে`, "🗑️");
+        }
+    };
+
+    // ডিলিট বাটনে ক্লিক হলে সরাসরি deleteSellerProduct কল নিশ্চিত করা
+    document.addEventListener("click", function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest("button") : null;
+        if (!btn) return;
+        const txt = (btn.innerText || btn.textContent || "").trim();
+        const oc = btn.getAttribute("onclick") || "";
+
+        if (txt.includes("ডিলিট") && !txt.includes("ইউজার")) {
+            const match = oc.match(/deleteSellerProduct\(\s*['"]?([^'"\)]+)['"]?\s*\)/i);
+            if (match && match[1]) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+                window.deleteSellerProduct(match[1]);
+            }
+        }
+    }, true);
+
+    // ২. নতুন ইউজার আইডি খুললে সাথে সাথে অ্যাডমিনের কাছে আবেদন ও রিয়েল-টাইম নোটিফিকেশন পাঠানো
+    function ensureRegistrationRequestsSynced() {
+        const st = getState();
+        if (!st) return;
+        if (!Array.isArray(st.registrationRequests)) st.registrationRequests = [];
+        if (!Array.isArray(st.accounts)) st.accounts = [];
+        if (!Array.isArray(st.notifications)) st.notifications = [];
+
+        const knownReqIds = new Set(st.registrationRequests.map(function (r) { return r && r.id; }).filter(Boolean));
+        const knownReqPhones = new Set(st.registrationRequests.map(function (r) { return r && r.phone; }).filter(Boolean));
+
+        st.accounts.forEach(function (acc) {
+            if (!acc || acc.role === "admin") return;
+            const hasById = acc.id && knownReqIds.has(acc.id);
+            const hasByPhone = acc.phone && knownReqPhones.has(acc.phone);
+            if (!hasById && !hasByPhone) {
+                const roleBn = acc.role === "seller" ? "বিক্রেতা" : (acc.role === "rider" ? "রাইডার" : "ক্রেতা");
+                const reqObj = {
+                    id: acc.id || ("REQ-" + Date.now() + "-" + Math.floor(100 + Math.random() * 900)),
+                    userId: acc.id,
+                    name: acc.name || "নতুন ইউজার",
+                    phone: acc.phone || "",
+                    role: acc.role || "buyer",
+                    roleLabel: roleBn,
+                    status: acc.status || "pending",
+                    createdAt: Date.now(),
+                    timeText: (typeof nowBnTime === "function") ? `আজ, ${nowBnTime()}` : new Date().toLocaleTimeString()
+                };
+                st.registrationRequests.unshift(reqObj);
+                knownReqIds.add(reqObj.id);
+                if (reqObj.phone) knownReqPhones.add(reqObj.phone);
+
+                const notifId = "REG-NOTIF-" + reqObj.id;
+                const alreadyNotified = st.notifications.some(function (n) { return n && n.id === notifId; });
+                if (!alreadyNotified) {
+                    st.notifications.unshift({
+                        id: notifId,
+                        title: `নতুন ${roleBn} আইডির আবেদন`,
+                        message: `${reqObj.name} (${reqObj.phone || "নম্বর নেই"}) ${roleBn} অ্যাকাউন্ট খোলার আবেদন করেছেন।`,
+                        forAdmin: true,
+                        targetRole: "admin",
+                        adminOnly: true,
+                        type: "alert",
+                        time: reqObj.timeText,
+                        createdAt: Date.now()
+                    });
+                }
+            }
+        });
+    }
+
+    if (typeof window.saveState === "function") {
+        const origSaveState = window.saveState;
+        window.saveState = function () {
+            const st = getState();
+            if (st) {
+                saveDeletedSet(st, loadDeletedSet(st));
+                ensureRegistrationRequestsSynced();
+            }
+            return origSaveState.apply(this, arguments);
         };
     }
 
-    // ৩. ডিলিট হওয়া পণ্য যেন কোনো রেন্ডারে বা সিঙ্কে ফিরে না আসে
-    const origSyncUI = window.syncAllUI;
-    if (typeof origSyncUI === "function") {
-        window.syncAllUI = function () {
-            const st = getAppSt();
-            if (st) {
-                saveDeletedIds(st, getDeletedIds(st));
-            }
-            const out = origSyncUI.apply(this, arguments);
-            filterHistoryForCurrentUser();
-            return out;
+    // অ্যাডমিন প্যানেল খুললে নতুন ইউজার আবেদনের কার্ড দেখানো
+    function renderNewUserRequestsForAdmin() {
+        if (!isAdmin()) return;
+        const st = getState();
+        if (!st) return;
+        ensureRegistrationRequestsSynced();
+
+        const host =
+            document.getElementById("adminModalBodyContainer") ||
+            document.getElementById("adminPanelBodyContainer") ||
+            document.getElementById("inlineAdminPanelHost");
+        if (!host) return;
+
+        const oldBox = document.getElementById("liveUserRegistrationBox");
+        if (oldBox) oldBox.remove();
+
+        const reqs = Array.isArray(st.registrationRequests) ? st.registrationRequests : [];
+        const bn = typeof window.toBn === "function" ? window.toBn : function (v) { return v; };
+
+        const box = document.createElement("div");
+        box.id = "liveUserRegistrationBox";
+        box.className = "p-3.5 rounded-2xl bg-slate-800/90 border border-slate-700 space-y-2 text-xs mt-3";
+
+        box.innerHTML = `
+            <div class="flex items-center justify-between gap-2">
+                <span class="font-extrabold text-emerald-300 text-sm">🆕 নতুন ইউজার আইডি আবেদন (${bn(reqs.length)}টি)</span>
+            </div>
+            <div class="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                ${reqs.length ? reqs.map(function (r) {
+                    return `
+                        <div class="p-2.5 rounded-xl bg-slate-950/75 border border-slate-700 flex items-center justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="font-bold text-white truncate">${r.name || "নতুন ইউজার"} <span class="text-[10px] text-amber-300">(${r.roleLabel || r.role || "ইউজার"})</span></div>
+                                <div class="text-[10px] text-slate-400 truncate">মোবাইল: ${r.phone || "—"} • সময়: ${r.timeText || ""}</div>
+                            </div>
+                            <span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold shrink-0">${r.status || "নতুন"}</span>
+                        </div>
+                    `;
+                }).join("") : `<p class="text-slate-400">এখনো কোনো নতুন আইডি আবেদন আসেনি।</p>`}
+            </div>
+        `;
+
+        host.appendChild(box);
+    }
+
+    if (typeof window.renderAdminPanel === "function") {
+        const origAdmin = window.renderAdminPanel;
+        window.renderAdminPanel = function () {
+            const res = origAdmin.apply(this, arguments);
+            renderNewUserRequestsForAdmin();
+            return res;
         };
     }
 
     setTimeout(function () {
-        const st = getAppSt();
-        if (st) saveDeletedIds(st, getDeletedIds(st));
-        filterHistoryForCurrentUser();
-    }, 300);
+        const st = getState();
+        if (st) {
+            saveDeletedSet(st, loadDeletedSet(st));
+            ensureRegistrationRequestsSynced();
+        }
+        renderNewUserRequestsForAdmin();
+    }, 350);
 })();
 </script>
 
