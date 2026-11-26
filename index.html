@@ -6353,5 +6353,296 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 
 </script>
+<!-- সম্পূর্ণ অ্যাপের রিয়েল-টাইম ক্লাউড সিঙ্ক + টার্গেটেড নোটিফিকেশন + লাইভ লোকেশন ইঞ্জিন -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<script>
+(function () {
+    const firebaseConfig = {
+        apiKey: "AIzaSyCbaHWzP342aM454Qw2U3lAv7aw3K0FMPg",
+        authDomain: "taza-bazar-62c60.firebaseapp.com",
+        projectId: "taza-bazar-62c60",
+        storageBucket: "taza-bazar-62c60.firebasestorage.app",
+        messagingSenderId: "959164783804",
+        appId: "1:959164783804:web:c36e1c34be5257f1b404b9"
+    };
+
+    if (!window.firebase) return;
+    if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+    }
+
+    const db = firebase.firestore();
+    const ROOM_ID = 'taza_bazar_live_v2';
+    const docRef = db.collection('ebazar_realtime_app').doc(ROOM_ID);
+
+    let applyingRemote = false;
+    let pushTimer = null;
+    let lastRemoteSignature = '';
+    let seenNotifKeys = new Set();
+    let watchGeoId = null;
+
+    function getStateObj() {
+        try {
+            if (typeof state !== 'undefined' && state && typeof state === 'object') return state;
+        } catch (_) {}
+        if (window.state && typeof window.state === 'object') return window.state;
+        return null;
+    }
+
+    function isCurrentUserAdmin() {
+        try {
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
+        } catch (_) {}
+        const st = getStateObj();
+        const u = st && st.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
+    }
+
+    function cloneCleanState(st) {
+        try {
+            const copy = JSON.parse(JSON.stringify(st));
+            delete copy.currentUser;
+            return copy;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function pushNowToFirestore() {
+        if (applyingRemote) return;
+        const st = getStateObj();
+        if (!st) return;
+        const clean = cloneCleanState(st);
+        if (!clean) return;
+
+        const u = st.currentUser || {};
+        docRef.set({
+            stateData: clean,
+            updatedAt: Date.now(),
+            updatedById: u.id || 'guest',
+            updatedByRole: u.role || 'guest'
+        }, { merge: true }).catch(function (err) {
+            console.warn('Firestore push failed:', err);
+        });
+    }
+
+    function queueFirestorePush() {
+        if (applyingRemote) return;
+        clearTimeout(pushTimer);
+        pushTimer = setTimeout(pushNowToFirestore, 150);
+    }
+
+    // saveState হুক করা
+    if (typeof window.saveState === 'function') {
+        const prevSave = window.saveState;
+        window.saveState = function () {
+            const out = prevSave.apply(this, arguments);
+            queueFirestorePush();
+            return out;
+        };
+    }
+
+    // লোকাল স্টোরেজ পরিবর্তনের সাথে সাথে ক্লাউডে পাঠানোর ব্যাকআপ হুক
+    const prevSetItem = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = function (k, v) {
+        prevSetItem(k, v);
+        if (!applyingRemote && typeof k === 'string' && (k.includes('ebazar') || k.includes('taza') || k.includes('state'))) {
+            queueFirestorePush();
+        }
+    };
+
+    // যার নোটিফিকেশন তার কাছেই যাবে (অ্যাডমিনেরটা শুধু অ্যাডমিনের কাছে)
+    function routeNotificationsToRightUser() {
+        const st = getStateObj();
+        if (!st || !st.currentUser) return;
+        const me = st.currentUser;
+        const amAdmin = isCurrentUserAdmin();
+        const notifs = Array.isArray(st.notifications) ? st.notifications : [];
+
+        notifs.slice(0, 25).forEach(function (n, idx) {
+            if (!n || typeof n !== 'object') return;
+            const key = String(n.id || (n.title + '_' + (n.time || n.createdAt || idx)));
+            if (seenNotifKeys.has(key)) return;
+
+            const isAdminOnly = Boolean(n.forAdmin || n.targetRole === 'admin' || n.adminOnly);
+            const targetUser = n.targetUserId || n.userId || n.toUserId || null;
+            const targetRole = n.targetRole || n.role || null;
+            const multiIds = Array.isArray(n.userIds) ? n.userIds : null;
+
+            let shouldDeliverToMe = false;
+            if (isAdminOnly) {
+                shouldDeliverToMe = amAdmin;
+            } else if (multiIds) {
+                shouldDeliverToMe = multiIds.includes(me.id);
+            } else if (targetUser) {
+                shouldDeliverToMe = (targetUser === me.id);
+            } else if (targetRole) {
+                shouldDeliverToMe = (me.role === targetRole);
+            } else {
+                // কোনো নির্দিষ্ট টার্গেট না থাকলে কেবল নিজের করা কাজের বা সাধারণ পাবলিক আপডেটের ক্ষেত্রে
+                shouldDeliverToMe = (n.actorId === me.id) || (n.public === true);
+            }
+
+            if (shouldDeliverToMe) {
+                seenNotifKeys.add(key);
+                const title = n.title || 'নতুন লাইভ আপডেট';
+                const body = n.message || n.body || n.desc || n.text || 'নতুন একটি কার্যক্রম সম্পন্ন হয়েছে।';
+                if (typeof window.triggerMobileFrontNotification === 'function') {
+                    window.triggerMobileFrontNotification(title, body, n.type || 'alert');
+                } else if (typeof window.showToast === 'function') {
+                    window.showToast(`${title}: ${body}`, '🔔');
+                }
+            }
+        });
+    }
+
+    // ডেলিভারি শুরু হলে ক্রেতা, বিক্রেতা ও রাইডার/ডেলিভারি বয়ের লাইভ লোকেশন আপডেট
+    function syncDeliveryThreeWayLocation() {
+        const st = getStateObj();
+        if (!st || !st.currentUser || !navigator.geolocation) return;
+        const me = st.currentUser;
+        const orders = Array.isArray(st.orders) ? st.orders : [];
+
+        const activeOrder = orders.find(function (o) {
+            if (!o) return false;
+            const s = String(o.status || '').toLowerCase();
+            const activeStage =
+                s.includes('deliver') ||
+                s.includes('rider') ||
+                s.includes('way') ||
+                s.includes('pick') ||
+                s.includes('ডেলিভারি') ||
+                s.includes('রাইডার') ||
+                s.includes('পথে');
+            const participant =
+                o.buyerId === me.id ||
+                o.sellerId === me.id ||
+                o.riderId === me.id ||
+                o.deliveryBoyId === me.id ||
+                isCurrentUserAdmin();
+            return activeStage && participant;
+        });
+
+        if (!activeOrder) return;
+
+        if (watchGeoId === null) {
+            watchGeoId = navigator.geolocation.watchPosition(
+                function (pos) {
+                    const curState = getStateObj();
+                    const curUser = curState && curState.currentUser;
+                    if (!curState || !curUser) return;
+
+                    if (!curState.liveLocations || typeof curState.liveLocations !== 'object') {
+                        curState.liveLocations = {};
+                    }
+                    if (!curState.liveLocations[activeOrder.id]) {
+                        curState.liveLocations[activeOrder.id] = {};
+                    }
+
+                    curState.liveLocations[activeOrder.id][curUser.id] = {
+                        userId: curUser.id,
+                        name: curUser.name || 'ব্যবহারকারী',
+                        role: curUser.role || 'user',
+                        lat: pos.coords.latitude,
+                        lng: pos.coords.longitude,
+                        accuracy: pos.coords.accuracy || null,
+                        updatedAt: Date.now()
+                    };
+
+                    if (typeof window.saveState === 'function') {
+                        window.saveState();
+                    } else {
+                        pushNowToFirestore();
+                    }
+                },
+                function () {},
+                { enableHighAccuracy: true, maximumAge: 4000, timeout: 10000 }
+            );
+        }
+    }
+
+    // Firestore থেকে রিয়েল-টাইম আপডেট গ্রহণ (অ্যাকাউন্ট রিকোয়েস্ট, আইডি যাচাই, অ্যাড আবেদন/অনুমোদন, অর্ডার, রাইডার, প্রোডাক্ট, সেটিংস/ফি/নম্বর)
+    docRef.onSnapshot(
+        function (snap) {
+            if (!snap.exists) return;
+            const st = getStateObj();
+            if (!st) return;
+
+            const docData = snap.data() || {};
+            const remote = docData.stateData;
+            if (!remote || typeof remote !== 'object') return;
+
+            const sig = JSON.stringify(remote);
+            if (sig === lastRemoteSignature) return;
+            lastRemoteSignature = sig;
+
+            applyingRemote = true;
+            try {
+                const savedCurrentUser = st.currentUser ? JSON.parse(JSON.stringify(st.currentUser)) : null;
+
+                Object.keys(remote).forEach(function (key) {
+                    if (key !== 'currentUser') {
+                        st[key] = remote[key];
+                    }
+                });
+
+                // ইউজারের অ্যাকাউন্ট অনুমোদন, ভেরিফিকেশন বা রোল আপডেট হলে currentUser-এ সিঙ্ক করা
+                if (savedCurrentUser && Array.isArray(st.accounts)) {
+                    const matched = st.accounts.find(function (acc) {
+                        return (
+                            (savedCurrentUser.id && acc.id === savedCurrentUser.id) ||
+                            (savedCurrentUser.phone && acc.phone === savedCurrentUser.phone) ||
+                            (savedCurrentUser.email && acc.email === savedCurrentUser.email)
+                        );
+                    });
+                    if (matched) {
+                        st.currentUser = Object.assign({}, savedCurrentUser, matched);
+                    } else {
+                        st.currentUser = savedCurrentUser;
+                    }
+                }
+
+                if (typeof window.saveState === 'function') {
+                    const orig = window.saveState;
+                    // লোকাল স্টোরেজ সিঙ্ক রাখা
+                    prevSetItem('ebazar_state_cache_v2', JSON.stringify(st));
+                    void orig;
+                }
+
+                if (typeof window.syncAllUI === 'function') {
+                    window.syncAllUI();
+                } else {
+                    if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid();
+                    if (typeof window.renderAddProductTab === 'function') window.renderAddProductTab();
+                }
+
+                routeNotificationsToRightUser();
+                syncDeliveryThreeWayLocation();
+            } finally {
+                setTimeout(function () {
+                    applyingRemote = false;
+                }, 150);
+            }
+        },
+        function (err) {
+            console.warn('Realtime snapshot listener error:', err);
+        }
+    );
+
+    // প্রাথমিক সিঙ্ক চালু করা
+    setTimeout(function () {
+        const st = getStateObj();
+        if (!st) return;
+        docRef.get().then(function (snap) {
+            if (!snap.exists) {
+                pushNowToFirestore();
+            }
+            syncDeliveryThreeWayLocation();
+        }).catch(function () {});
+    }, 800);
+})();
+</script>
 </body>
 	</html>
