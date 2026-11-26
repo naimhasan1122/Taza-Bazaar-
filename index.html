@@ -7623,7 +7623,7 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const FB_CFG = {
+    const FB_CONFIG = {
         apiKey: "AIzaSyCbaHWzP342aM454Qw2U3lAv7aw3K0FMPg",
         authDomain: "taza-bazar-62c60.firebaseapp.com",
         projectId: "taza-bazar-62c60",
@@ -7632,7 +7632,9 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         appId: "1:959164783804:web:c36e1c34be5257f1b404b9"
     };
 
-    function getAppStateObj() {
+    const LIVE_STORE_KEY = "taza_bazar_live_guard_v3";
+
+    function getSt() {
         if (typeof state !== "undefined" && state && typeof state === "object") {
             window.state = state;
             return state;
@@ -7640,88 +7642,192 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return window.state && typeof window.state === "object" ? window.state : null;
     }
 
-    function isAdminSessionNow() {
+    function isAdminUser() {
         try {
             if (typeof isAdminActive === "function" && isAdminActive()) return true;
         } catch (_) {}
-        const st = getAppStateObj();
+        const st = getSt();
         const u = st && st.currentUser;
         return Boolean(u && (u.role === "admin" || u.isAdmin === true));
     }
 
-    // ছবি ছোট করে কম্প্রেস করা (যাতে লাইভ সিঙ্কে ছবি দ্রুত ও নির্ভুলভাবে যায়)
-    function compressDataUrlImage(dataUrl, maxSide, quality) {
+    function showNotice(msg, icon) {
+        if (typeof window.showToast === "function") {
+            window.showToast(msg, icon || "ℹ️");
+        } else {
+            alert(msg);
+        }
+    }
+
+    function getDeletedProdSet(st) {
+        const set = new Set(Array.isArray(st && st.deletedProductIds) ? st.deletedProductIds : []);
+        try {
+            const raw = localStorage.getItem(LIVE_STORE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && Array.isArray(parsed.deletedProductIds)) {
+                    parsed.deletedProductIds.forEach(function (id) { set.add(id); });
+                }
+            }
+        } catch (_) {}
+        return set;
+    }
+
+    function persistDeletedLists(st) {
+        if (!st) return;
+        const delProds = getDeletedProdSet(st);
+        st.deletedProductIds = Array.from(delProds);
+        if (Array.isArray(st.products)) {
+            st.products = st.products.filter(function (p) { return p && !delProds.has(p.id); });
+        }
+        try {
+            localStorage.setItem(LIVE_STORE_KEY, JSON.stringify({
+                deletedProductIds: st.deletedProductIds,
+                deletedAccountIds: st.deletedAccountIds || [],
+                updatedAt: Date.now()
+            }));
+        } catch (_) {}
+    }
+
+    // ডিলিট বাটন যেন সত্যিই পণ্য মুছে ফেলে এবং ফিরে না আসে
+    window.deleteSellerProduct = function (productId) {
+        const st = getSt();
+        if (!st || !Array.isArray(st.products)) return;
+        const u = st.currentUser;
+        const prod = st.products.find(function (p) { return p && p.id === productId; });
+        if (!prod || !u) return;
+
+        if (!isAdminUser() && prod.sellerId !== u.id) {
+            return showNotice("শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন ডিলিট করতে পারবেন!", "🔒");
+        }
+
+        const delSet = getDeletedProdSet(st);
+        delSet.add(productId);
+        st.deletedProductIds = Array.from(delSet);
+
+        st.products = st.products.filter(function (p) { return p && p.id !== productId; });
+        if (Array.isArray(st.cart)) {
+            st.cart = st.cart.filter(function (c) { return c && c.productId !== productId; });
+        }
+
+        if (typeof window.recordHistoryEntry === "function") {
+            window.recordHistoryEntry({
+                category: "পণ্য ডিলিট",
+                title: `${u.name || "ব্যবহারকারী"} "${prod.name}" পণ্যটি ডিলিট করেছেন`,
+                actor: u.name || "ব্যবহারকারী",
+                amount: prod.price || 0,
+                decision: "rejected",
+                reason: "পণ্য ডিলিট করা হয়েছে",
+                userIds: [prod.sellerId, u.id].filter(Boolean)
+            });
+        }
+
+        persistDeletedLists(st);
+
+        if (typeof window.saveState === "function") {
+            window.saveState();
+        }
+        if (typeof window.syncAllUI === "function") {
+            window.syncAllUI();
+        } else {
+            if (typeof window.renderProductsGrid === "function") window.renderProductsGrid();
+            if (typeof window.renderAddProductTab === "function") window.renderAddProductTab();
+        }
+
+        if (typeof window.triggerMobileFrontNotification === "function") {
+            window.triggerMobileFrontNotification("পণ্য ডিলিট হয়েছে", `"${prod.name}" মুছে ফেলা হয়েছে।`, "alert");
+        } else {
+            showNotice(`"${prod.name}" ডিলিট হয়েছে`, "🗑️");
+        }
+    };
+
+    // অফ/অন বাটন ফাংশন
+    window.toggleProductVisibility = function (productId) {
+        const st = getSt();
+        if (!st || !Array.isArray(st.products)) return;
+        const u = st.currentUser;
+        const prod = st.products.find(function (p) { return p && p.id === productId; });
+        if (!prod || !u) return;
+
+        if (!isAdminUser() && prod.sellerId !== u.id) {
+            return showNotice("শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন অফ/অন করতে পারবেন!", "🔒");
+        }
+
+        prod.hiddenBySeller = !Boolean(prod.hiddenBySeller);
+        if (typeof window.saveState === "function") {
+            window.saveState();
+        }
+        if (typeof window.syncAllUI === "function") {
+            window.syncAllUI();
+        }
+        showNotice(
+            prod.hiddenBySeller ? `"${prod.name}" অফ করা হয়েছে` : `"${prod.name}" অন করা হয়েছে`,
+            prod.hiddenBySeller ? "🙈" : "👁️"
+        );
+    };
+
+    function shrinkImage(dataUrl) {
         return new Promise(function (resolve) {
             if (!dataUrl || typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) {
                 return resolve(dataUrl || "");
             }
-            if (dataUrl.length < 180000) {
-                return resolve(dataUrl);
-            }
+            if (dataUrl.length < 150000) return resolve(dataUrl);
             const img = new Image();
             img.onload = function () {
                 try {
-                    const limit = maxSide || 640;
-                    let w = img.width || limit;
-                    let h = img.height || limit;
-                    if (w > h && w > limit) {
-                        h = Math.round((h * limit) / w);
-                        w = limit;
-                    } else if (h >= w && h > limit) {
-                        w = Math.round((w * limit) / h);
-                        h = limit;
+                    const maxDim = 600;
+                    let w = img.width || maxDim;
+                    let h = img.height || maxDim;
+                    if (w > h && w > maxDim) {
+                        h = Math.round((h * maxDim) / w);
+                        w = maxDim;
+                    } else if (h >= w && h > maxDim) {
+                        w = Math.round((w * maxDim) / h);
+                        h = maxDim;
                     }
-                    const canvas = document.createElement("canvas");
-                    canvas.width = w;
-                    canvas.height = h;
-                    const ctx = canvas.getContext("2d");
-                    ctx.drawImage(img, 0, 0, w, h);
-                    const out = canvas.toDataURL("image/jpeg", quality || 0.72);
+                    const c = document.createElement("canvas");
+                    c.width = w;
+                    c.height = h;
+                    c.getContext("2d").drawImage(img, 0, 0, w, h);
+                    const out = c.toDataURL("image/jpeg", 0.7);
                     resolve(out.length < dataUrl.length ? out : dataUrl);
                 } catch (_) {
                     resolve(dataUrl);
                 }
             };
-            img.onerror = function () {
-                resolve(dataUrl);
-            };
+            img.onerror = function () { resolve(dataUrl); };
             img.src = dataUrl;
         });
     }
 
-    async function optimizeImagesInObject(val) {
+    async function packImages(val) {
         if (typeof val === "string") {
-            if (val.startsWith("data:image/")) {
-                return await compressDataUrlImage(val, 640, 0.72);
-            }
-            return val;
+            return val.startsWith("data:image/") ? await shrinkImage(val) : val;
         }
         if (Array.isArray(val)) {
-            const arr = [];
-            for (let i = 0; i < val.length; i++) {
-                arr.push(await optimizeImagesInObject(val[i]));
-            }
-            return arr;
+            const res = [];
+            for (let i = 0; i < val.length; i++) res.push(await packImages(val[i]));
+            return res;
         }
         if (val && typeof val === "object") {
             const obj = {};
             const keys = Object.keys(val);
             for (let i = 0; i < keys.length; i++) {
-                const k = keys[i];
-                obj[k] = await optimizeImagesInObject(val[k]);
+                obj[keys[i]] = await packImages(val[keys[i]]);
             }
             return obj;
         }
         return val;
     }
 
-    function mergeByKey(localArr, remoteArr) {
+    function mergeArraysRespectingDeletes(localArr, remoteArr, deletedSet) {
         const map = new Map();
-        const a = Array.isArray(remoteArr) ? remoteArr : [];
-        const b = Array.isArray(localArr) ? localArr : [];
+        const r = Array.isArray(remoteArr) ? remoteArr : [];
+        const l = Array.isArray(localArr) ? localArr : [];
 
-        a.concat(b).forEach(function (item, idx) {
+        r.concat(l).forEach(function (item, idx) {
             if (!item || typeof item !== "object") return;
+            if (item.id && deletedSet && deletedSet.has(item.id)) return;
             const key = item.id || [
                 item.category || "",
                 item.title || "",
@@ -7731,59 +7837,56 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             ].join("_");
             const prev = map.get(key);
             const merged = prev ? Object.assign({}, prev, item) : JSON.parse(JSON.stringify(item));
-            // ছবি থাকলে নতুন বা বিদ্যমান ছবি বজায় রাখা
             if (!merged.img && prev && prev.img) merged.img = prev.img;
-            if (!merged.nidImg && prev && prev.nidImg) merged.nidImg = prev.nidImg;
-            if (!merged.idCardImg && prev && prev.idCardImg) merged.idCardImg = prev.idCardImg;
             map.set(key, merged);
         });
 
         return Array.from(map.values());
     }
 
-    function runFullLiveSync() {
+    function startLiveAllActivities() {
         if (!window.firebase || !window.firebase.firestore) return;
         if (!firebase.apps.length) {
-            firebase.initializeApp(FB_CFG);
+            firebase.initializeApp(FB_CONFIG);
         }
 
         const db = firebase.firestore();
         const mainDoc = db.collection("taza_bazar_live_room").doc("all_live_activities");
         const mediaDoc = db.collection("taza_bazar_live_room").doc("all_live_media");
 
-        let applyingRemote = false;
-        let syncTimer = null;
-        let lastSnapshotHash = "";
-        let notifiedSet = new Set();
+        let fromCloud = false;
+        let timer = null;
+        let lastHash = "";
+        let seenNotifs = new Set();
 
-        function fireTargetedNotifs() {
-            const st = getAppStateObj();
+        function notifyMe() {
+            const st = getSt();
             if (!st || !st.currentUser) return;
             const me = st.currentUser;
-            const amAdmin = isAdminSessionNow();
-            const list = Array.isArray(st.notifications) ? st.notifications : [];
+            const amAdmin = isAdminUser();
+            const notifs = Array.isArray(st.notifications) ? st.notifications : [];
 
-            list.slice(0, 25).forEach(function (n, i) {
+            notifs.slice(0, 25).forEach(function (n, idx) {
                 if (!n || typeof n !== "object") return;
-                const key = String(n.id || (n.title + "_" + (n.time || n.createdAt || i)));
-                if (notifiedSet.has(key)) return;
+                const k = String(n.id || (n.title + "_" + (n.time || n.createdAt || idx)));
+                if (seenNotifs.has(k)) return;
 
-                const isAdminMsg = Boolean(n.forAdmin || n.targetRole === "admin" || n.adminOnly);
-                const userList = Array.isArray(n.userIds) ? n.userIds : null;
+                const adminOnly = Boolean(n.forAdmin || n.targetRole === "admin" || n.adminOnly);
+                const userIds = Array.isArray(n.userIds) ? n.userIds : null;
                 const tUser = n.targetUserId || n.userId || n.toUserId || null;
                 const tRole = n.targetRole || n.role || null;
 
                 let match = false;
-                if (isAdminMsg) match = amAdmin;
-                else if (userList) match = userList.includes(me.id);
+                if (adminOnly) match = amAdmin;
+                else if (userIds) match = userIds.includes(me.id);
                 else if (tUser) match = tUser === me.id;
                 else if (tRole) match = me.role === tRole;
                 else match = n.actorId === me.id || n.public === true;
 
                 if (match) {
-                    notifiedSet.add(key);
+                    seenNotifs.add(k);
                     const title = n.title || "নতুন লাইভ আপডেট";
-                    const body = n.message || n.body || n.text || "নতুন কার্যক্রম এসেছে।";
+                    const body = n.message || n.body || n.text || "নতুন কার্যক্রম সম্পন্ন হয়েছে।";
                     if (typeof window.triggerMobileFrontNotification === "function") {
                         window.triggerMobileFrontNotification(title, body, n.type || "alert");
                     } else if (typeof window.showToast === "function") {
@@ -7793,47 +7896,45 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             });
         }
 
-        async function pushAllLiveDataNow() {
-            if (applyingRemote) return;
-            const st = getAppStateObj();
+        async function pushLiveNow() {
+            if (fromCloud) return;
+            const st = getSt();
             if (!st) return;
+            persistDeletedLists(st);
 
             try {
-                const rawCopy = JSON.parse(JSON.stringify(st));
-                delete rawCopy.currentUser;
-
-                const optimized = await optimizeImagesInObject(rawCopy);
+                const copy = JSON.parse(JSON.stringify(st));
+                delete copy.currentUser;
+                const packed = await packImages(copy);
                 const u = st.currentUser || {};
 
-                const coreBundle = {
-                    accounts: optimized.accounts || [],
-                    products: optimized.products || [],
-                    orders: optimized.orders || [],
-                    notifications: optimized.notifications || [],
-                    ads: optimized.ads || [],
-                    packageRequests: optimized.packageRequests || [],
-                    withdrawalRequests: optimized.withdrawalRequests || [],
-                    passwordResetRequests: optimized.passwordResetRequests || [],
-                    riderDeposits: optimized.riderDeposits || [],
-                    registrationRequests: optimized.registrationRequests || [],
-                    history: optimized.history || [],
-                    deletedAccountIds: optimized.deletedAccountIds || [],
-                    settings: optimized.settings || {},
-                    liveLocations: optimized.liveLocations || {},
-                    admobImpressions: Number(optimized.admobImpressions || 0)
+                const bundle = {
+                    accounts: packed.accounts || [],
+                    products: packed.products || [],
+                    orders: packed.orders || [],
+                    notifications: packed.notifications || [],
+                    ads: packed.ads || [],
+                    packageRequests: packed.packageRequests || [],
+                    withdrawalRequests: packed.withdrawalRequests || [],
+                    passwordResetRequests: packed.passwordResetRequests || [],
+                    riderDeposits: packed.riderDeposits || [],
+                    registrationRequests: packed.registrationRequests || [],
+                    history: packed.history || [],
+                    deletedProductIds: packed.deletedProductIds || [],
+                    deletedAccountIds: packed.deletedAccountIds || [],
+                    settings: packed.settings || {},
+                    liveLocations: packed.liveLocations || {},
+                    admobImpressions: Number(packed.admobImpressions || 0)
                 };
 
                 const productPhotos = {};
-                (coreBundle.products || []).forEach(function (p) {
-                    if (p && p.id && p.img) {
-                        productPhotos[p.id] = p.img;
-                    }
+                (bundle.products || []).forEach(function (p) {
+                    if (p && p.id && p.img) productPhotos[p.id] = p.img;
                 });
 
-                const coreStr = JSON.stringify(coreBundle);
-                if (new Blob([coreStr]).size <= 850000) {
+                if (new Blob([JSON.stringify(bundle)]).size <= 850000) {
                     await mainDoc.set({
-                        bundle: coreBundle,
+                        bundle: bundle,
                         updatedAt: Date.now(),
                         byId: u.id || "guest",
                         byRole: u.role || "guest"
@@ -7844,129 +7945,140 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
                     productPhotos: productPhotos,
                     updatedAt: Date.now()
                 }, { merge: true });
-            } catch (err) {
-                console.warn("Live sync push error:", err && err.message ? err.message : err);
+            } catch (e) {
+                console.warn("Live push failed:", e && e.message ? e.message : e);
             }
         }
 
-        function scheduleLivePush() {
-            if (applyingRemote) return;
-            clearTimeout(syncTimer);
-            syncTimer = setTimeout(pushAllLiveDataNow, 220);
+        function queueLivePush() {
+            if (fromCloud) return;
+            clearTimeout(timer);
+            timer = setTimeout(pushLiveNow, 200);
         }
 
         if (typeof window.saveState === "function") {
-            const origSaveState = window.saveState;
+            const origSave = window.saveState;
             window.saveState = function () {
-                const out = origSaveState.apply(this, arguments);
-                scheduleLivePush();
+                const st = getSt();
+                if (st) persistDeletedLists(st);
+                const out = origSave.apply(this, arguments);
+                queueLivePush();
                 return out;
             };
         }
 
         mediaDoc.onSnapshot(function (mSnap) {
             if (!mSnap.exists) return;
-            const st = getAppStateObj();
+            const st = getSt();
             if (!st || !Array.isArray(st.products)) return;
+            const delProds = getDeletedProdSet(st);
             const photos = (mSnap.data() || {}).productPhotos;
             if (!photos || typeof photos !== "object") return;
 
-            let changed = false;
+            let updated = false;
             st.products.forEach(function (p) {
-                if (p && p.id && photos[p.id] && p.img !== photos[p.id]) {
+                if (p && p.id && !delProds.has(p.id) && photos[p.id] && p.img !== photos[p.id]) {
                     p.img = photos[p.id];
-                    changed = true;
+                    updated = true;
                 }
             });
 
-            if (changed && typeof window.syncAllUI === "function") {
-                applyingRemote = true;
+            if (updated && typeof window.syncAllUI === "function") {
+                fromCloud = true;
                 try {
                     window.syncAllUI();
                 } finally {
-                    setTimeout(function () { applyingRemote = false; }, 120);
+                    setTimeout(function () { fromCloud = false; }, 120);
                 }
             }
         }, function () {});
 
         mainDoc.onSnapshot(function (snap) {
             if (!snap.exists) return;
-            const st = getAppStateObj();
+            const st = getSt();
             if (!st) return;
 
-            const remoteBundle = (snap.data() || {}).bundle;
-            if (!remoteBundle || typeof remoteBundle !== "object") return;
+            const remote = (snap.data() || {}).bundle;
+            if (!remote || typeof remote !== "object") return;
 
-            const hash = JSON.stringify(remoteBundle);
-            if (hash === lastSnapshotHash) return;
-            lastSnapshotHash = hash;
+            const hash = JSON.stringify(remote);
+            if (hash === lastHash) return;
+            lastHash = hash;
 
-            applyingRemote = true;
+            fromCloud = true;
             try {
-                const savedUser = st.currentUser ? JSON.parse(JSON.stringify(st.currentUser)) : null;
-                const deletedSet = new Set([
+                const keepUser = st.currentUser ? JSON.parse(JSON.stringify(st.currentUser)) : null;
+
+                const delProds = new Set([
+                    ...Array.from(getDeletedProdSet(st)),
+                    ...(Array.isArray(remote.deletedProductIds) ? remote.deletedProductIds : [])
+                ]);
+                const delAccs = new Set([
                     ...(Array.isArray(st.deletedAccountIds) ? st.deletedAccountIds : []),
-                    ...(Array.isArray(remoteBundle.deletedAccountIds) ? remoteBundle.deletedAccountIds : [])
+                    ...(Array.isArray(remote.deletedAccountIds) ? remote.deletedAccountIds : [])
                 ]);
 
-                st.deletedAccountIds = Array.from(deletedSet);
-                st.accounts = mergeByKey(st.accounts, remoteBundle.accounts).filter(function (a) {
-                    return a && !deletedSet.has(a.id);
-                });
-                st.products = mergeByKey(st.products, remoteBundle.products);
-                st.orders = mergeByKey(st.orders, remoteBundle.orders);
-                st.notifications = mergeByKey(st.notifications, remoteBundle.notifications);
-                st.ads = mergeByKey(st.ads, remoteBundle.ads);
-                st.packageRequests = mergeByKey(st.packageRequests, remoteBundle.packageRequests);
-                st.withdrawalRequests = mergeByKey(st.withdrawalRequests, remoteBundle.withdrawalRequests);
-                st.passwordResetRequests = mergeByKey(st.passwordResetRequests, remoteBundle.passwordResetRequests);
-                st.riderDeposits = mergeByKey(st.riderDeposits, remoteBundle.riderDeposits);
-                st.registrationRequests = mergeByKey(st.registrationRequests, remoteBundle.registrationRequests);
-                st.history = mergeByKey(st.history, remoteBundle.history);
+                st.deletedProductIds = Array.from(delProds);
+                st.deletedAccountIds = Array.from(delAccs);
 
-                if (remoteBundle.settings && typeof remoteBundle.settings === "object") {
-                    st.settings = Object.assign({}, st.settings || {}, remoteBundle.settings);
+                st.accounts = mergeArraysRespectingDeletes(st.accounts, remote.accounts, delAccs);
+                st.products = mergeArraysRespectingDeletes(st.products, remote.products, delProds);
+                st.orders = mergeArraysRespectingDeletes(st.orders, remote.orders, null);
+                st.notifications = mergeArraysRespectingDeletes(st.notifications, remote.notifications, null);
+                st.ads = mergeArraysRespectingDeletes(st.ads, remote.ads, null);
+                st.packageRequests = mergeArraysRespectingDeletes(st.packageRequests, remote.packageRequests, null);
+                st.withdrawalRequests = mergeArraysRespectingDeletes(st.withdrawalRequests, remote.withdrawalRequests, null);
+                st.passwordResetRequests = mergeArraysRespectingDeletes(st.passwordResetRequests, remote.passwordResetRequests, null);
+                st.riderDeposits = mergeArraysRespectingDeletes(st.riderDeposits, remote.riderDeposits, null);
+                st.registrationRequests = mergeArraysRespectingDeletes(st.registrationRequests, remote.registrationRequests, null);
+                st.history = mergeArraysRespectingDeletes(st.history, remote.history, null);
+
+                if (remote.settings && typeof remote.settings === "object") {
+                    st.settings = Object.assign({}, st.settings || {}, remote.settings);
                 }
-                if (remoteBundle.liveLocations && typeof remoteBundle.liveLocations === "object") {
-                    st.liveLocations = Object.assign({}, st.liveLocations || {}, remoteBundle.liveLocations);
+                if (remote.liveLocations && typeof remote.liveLocations === "object") {
+                    st.liveLocations = Object.assign({}, st.liveLocations || {}, remote.liveLocations);
                 }
-                if (typeof remoteBundle.admobImpressions === "number") {
-                    st.admobImpressions = Math.max(Number(st.admobImpressions || 0), remoteBundle.admobImpressions);
+                if (typeof remote.admobImpressions === "number") {
+                    st.admobImpressions = Math.max(Number(st.admobImpressions || 0), remote.admobImpressions);
                 }
 
-                if (savedUser && Array.isArray(st.accounts)) {
-                    const freshAcc = st.accounts.find(function (a) {
-                        return (savedUser.id && a.id === savedUser.id) || (savedUser.phone && a.phone === savedUser.phone);
+                if (keepUser && Array.isArray(st.accounts)) {
+                    const fresh = st.accounts.find(function (a) {
+                        return (keepUser.id && a.id === keepUser.id) || (keepUser.phone && a.phone === keepUser.phone);
                     });
-                    st.currentUser = freshAcc ? Object.assign({}, savedUser, freshAcc) : savedUser;
+                    st.currentUser = fresh ? Object.assign({}, keepUser, fresh) : keepUser;
                 }
 
                 if (typeof window.syncAllUI === "function") {
                     window.syncAllUI();
                 }
 
-                fireTargetedNotifs();
+                notifyMe();
             } finally {
                 setTimeout(function () {
-                    applyingRemote = false;
+                    fromCloud = false;
                 }, 150);
             }
         }, function (err) {
-            console.warn("Firestore snapshot error:", err && err.message ? err.message : err);
+            console.warn("Live snapshot error:", err && err.message ? err.message : err);
         });
 
         setTimeout(function () {
             mainDoc.get().then(function (snap) {
                 if (!snap.exists) {
-                    pushAllLiveDataNow();
+                    pushLiveNow();
                 }
             }).catch(function () {});
         }, 700);
     }
 
-    function bootLiveSync() {
+    function initSdkAndLive() {
+        const st = getSt();
+        if (st) persistDeletedLists(st);
+
         if (window.firebase && window.firebase.firestore) {
-            runFullLiveSync();
+            startLiveAllActivities();
             return;
         }
         const s1 = document.createElement("script");
@@ -7974,14 +8086,14 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         s1.onload = function () {
             const s2 = document.createElement("script");
             s2.src = "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js";
-            s2.onload = runFullLiveSync;
+            s2.onload = startLiveAllActivities;
             document.body.appendChild(s2);
         };
         document.body.appendChild(s1);
     }
 
     window.addEventListener("DOMContentLoaded", function () {
-        setTimeout(bootLiveSync, 250);
+        setTimeout(initSdkAndLive, 250);
     });
 })();
 </script>
