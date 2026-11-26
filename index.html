@@ -6731,587 +6731,146 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    // =========================================================================
-    // ১. চারটি বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন) লক সিস্টেম
-    // ডিফল্ট পাসওয়ার্ড: 33433487 (কোড ঘেঁটে সরাসরি না পাওয়ার জন্য হ্যাশ দিয়ে যাচাই)
-    // পাসওয়ার্ড বদলাতে চাইলে নিচের passHash ফাংশনে নতুন পাসওয়ার্ড দিয়ে মান বসিয়ে নেবে
-    // =========================================================================
-    function computePinDigest(rawPin) {
-        const str = String(rawPin || '').trim();
-        let h1 = 0x811c9dc5;
-        let h2 = 0x01000193;
-        for (let i = 0; i < str.length; i++) {
-            const c = str.charCodeAt(i);
-            h1 ^= c;
-            h1 = Math.imul(h1, 0x01000193) >>> 0;
-            h2 = ((h2 << 5) - h2 + c + i * 17) >>> 0;
+    // চারটি বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন) লক — পাসওয়ার্ড: 33433487
+    function hashRolePass(raw) {
+        const s = String(raw || '').trim();
+        let a = 0x811c9dc5;
+        let b = 0x01000193;
+        for (let i = 0; i < s.length; i++) {
+            const code = s.charCodeAt(i);
+            a ^= code;
+            a = Math.imul(a, 0x01000193) >>> 0;
+            b = ((b << 5) - b + code + i * 13) >>> 0;
         }
-        return h1.toString(16).padStart(8, '0') + '-' + h2.toString(16).padStart(8, '0');
+        return a.toString(16).padStart(8, '0') + ':' + b.toString(16).padStart(8, '0');
     }
 
-    // '33433487' এর ডাইজেস্ট
-    const EXPECTED_ROLE_LOCK_DIGEST = computePinDigest(['51','51','52','51','51','52','56','55'].map(n => String.fromCharCode(Number(n))).join(''));
-    const UNLOCKED_SESSION_MAP = {};
-
-    function verifyRolePin(inputPin) {
-        return computePinDigest(inputPin) === EXPECTED_ROLE_LOCK_DIGEST;
-    }
-
-    function promptRoleUnlockModal(roleLabel, onSuccess) {
-        const existing = document.getElementById('ebazarRolePinModal');
-        if (existing) existing.remove();
-
-        const wrap = document.createElement('div');
-        wrap.id = 'ebazarRolePinModal';
-        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.75);display:flex;align-items:center;justify-content:center;padding:16px;';
-
-        wrap.innerHTML = `
-            <div style="width:100%;max-width:340px;background:#ffffff;border-radius:18px;padding:20px;box-shadow:0 20px 40px rgba(0,0,0,0.35);font-family:sans-serif;">
-                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${roleLabel} লক করা আছে</div>
-                <div style="font-size:12px;color:#475569;margin-bottom:12px;">এই অপশনে প্রবেশ করতে গোপন পাসওয়ার্ড দিন:</div>
-                <input id="ebazarRolePinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
-                    style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:10px;outline:none;">
-                <div id="ebazarRolePinErr" style="font-size:11px;color:#dc2626;min-height:16px;margin-bottom:10px;font-weight:700;"></div>
-                <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="ebazarRolePinCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
-                    <button id="ebazarRolePinSubmit" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
-                </div>
-            </div>
-        `;
-
-        document.body.appendChild(wrap);
-        const inp = document.getElementById('ebazarRolePinInput');
-        const errEl = document.getElementById('ebazarRolePinErr');
-        const btnOk = document.getElementById('ebazarRolePinSubmit');
-        const btnNo = document.getElementById('ebazarRolePinCancel');
-
-        setTimeout(() => inp && inp.focus(), 50);
-
-        function closeModal() {
-            wrap.remove();
-        }
-
-        function attempt() {
-            const val = inp ? inp.value : '';
-            if (verifyRolePin(val)) {
-                UNLOCKED_SESSION_MAP[roleLabel] = true;
-                closeModal();
-                if (typeof onSuccess === 'function') onSuccess();
-            } else {
-                if (errEl) errEl.textContent = 'ভুল পাসওয়ার্ড! অনুমোদিত পাসওয়ার্ড দিন।';
-                if (inp) {
-                    inp.value = '';
-                    inp.focus();
-                }
-            }
-        }
-
-        btnNo.addEventListener('click', closeModal);
-        btnOk.addEventListener('click', attempt);
-        inp.addEventListener('keydown', function (ev) {
-            if (ev.key === 'Enter') {
-                ev.preventDefault();
-                attempt();
-            } else if (ev.key === 'Escape') {
-                closeModal();
-            }
-        });
-        wrap.addEventListener('click', function (ev) {
-            if (ev.target === wrap) closeModal();
-        });
-    }
-
-    function detectLockedRoleButton(target) {
-        if (!target || !target.closest) return null;
-        const el = target.closest('button, a, [role="button"], .demo-btn, .role-btn, [onclick]');
-        if (!el) return null;
-
-        const text = (el.innerText || el.textContent || '').trim();
-        const attr = ((el.getAttribute('onclick') || '') + ' ' + (el.id || '') + ' ' + (el.className || '')).toLowerCase();
-
-        if (text.includes('অ্যাডমিন') || text.includes('এডমিন') || attr.includes('admin')) {
-            return 'অ্যাডমিন';
-        }
-        if (text.includes('বিক্রেতা') || attr.includes('seller')) {
-            return 'বিক্রেতা';
-        }
-        if (text.includes('রাইডার') || text.includes('ডেলিভারি') || attr.includes('rider') || attr.includes('delivery')) {
-            return 'রাইডার';
-        }
-        if (text.includes('ক্রেতা') || attr.includes('buyer') || attr.includes('customer')) {
-            return 'ক্রেতা';
-        }
-        return null;
-    }
-
-    // ক্যাপচার ফেজে ক্লিক আটকে পাসওয়ার্ড চাওয়া (শুধু ফ্রন্ট/রোল/ডেমো সিলেকশন বাটনে)
-    document.addEventListener('click', function (e) {
-        if (e.target && e.target.dataset && e.target.dataset.rolePinPassed === '1') {
-            delete e.target.dataset.rolePinPassed;
-            return;
-        }
-        const roleName = detectLockedRoleButton(e.target);
-        if (!roleName) return;
-
-        // ইতিমধ্যে লগইন হয়ে থাকলে বা ইনপুট/ফর্ম সাবমিট না হলে লক এনফোর্স করা
-        const triggerEl = e.target.closest('button, a, [role="button"], .demo-btn, .role-btn, [onclick]') || e.target;
-        const isInsideActiveWorkspace = Boolean(triggerEl.closest('#adminPanel, #sellerPanel, #riderPanel, #buyerPanel, .dashboard-panel'));
-        if (isInsideActiveWorkspace) return;
-
-        e.preventDefault();
-        e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === 'function') {
-            e.stopImmediatePropagation();
-        }
-
-        if (UNLOCKED_SESSION_MAP[roleName]) {
-            triggerEl.dataset.rolePinPassed = '1';
-            setTimeout(() => triggerEl.click(), 10);
-            return;
-        }
-
-        promptRoleUnlockModal(roleName, function () {
-            triggerEl.dataset.rolePinPassed = '1';
-            setTimeout(() => triggerEl.click(), 10);
-        });
-    }, true);
-
-    // =========================================================================
-    // ২. সব কার্যক্রমের রিয়েল-টাইম Firestore সিঙ্ক (লোকাল স্টোরেজ নির্ভরতা কমিয়ে)
-    // =========================================================================
-    if (!window.firebase || !firebase.apps || !firebase.apps.length) return;
-    const db = firebase.firestore();
-    const liveDoc = db.collection('ebazar_realtime_app').doc('taza_bazar_live_v2');
-
-    let isSyncingFromCloud = false;
-    let syncDebounce = null;
-    let lastCloudPayloadHash = '';
-    let notifiedSet = new Set();
-    let geoWatcher = null;
-
-    function getAppState() {
-        if (typeof window.state !== 'undefined' && window.state && typeof window.state === 'object') return window.state;
-        try {
-            if (typeof state !== 'undefined' && state && typeof state === 'object') {
-                window.state = state;
-                return state;
-            }
-        } catch (_) {}
-        return null;
-    }
-
-    function isAdminSession() {
-        try {
-            if (typeof window.isAdminActive === 'function' && window.isAdminActive()) return true;
-        } catch (_) {}
-        const st = getAppState();
-        const u = st && st.currentUser;
-        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
-    }
-
-    function buildSyncPayload(st) {
-        const cloned = JSON.parse(JSON.stringify(st));
-        delete cloned.currentUser;
-        const rawSize = new Blob([JSON.stringify(cloned)]).size;
-        // ১ MB লিমিটের ভেতর রাখতে বড় ছবি/লগ থাকলে সামঞ্জস্য করা
-        if (rawSize > 900000) {
-            return {
-                accounts: cloned.accounts || [],
-                products: cloned.products || [],
-                orders: cloned.orders || [],
-                notifications: cloned.notifications || [],
-                ads: cloned.ads || cloned.adRequests || [],
-                settings: cloned.settings || cloned.fees || cloned.config || {},
-                liveLocations: cloned.liveLocations || {},
-                history: (cloned.history || []).slice(0, 100),
-                _trimmedForFirestoreSize: true
-            };
-        }
-        return cloned;
-    }
-
-    function pushLiveStateNow() {
-        if (isSyncingFromCloud) return;
-        const st = getAppState();
-        if (!st) return;
-
-        let payload;
-        try {
-            payload = buildSyncPayload(st);
-        } catch (err) {
-            console.warn('Live payload build error:', err);
-            return;
-        }
-
-        const serialized = JSON.stringify(payload);
-        if (serialized === lastCloudPayloadHash) return;
-        lastCloudPayloadHash = serialized;
-
-        const u = st.currentUser || {};
-        liveDoc.set({
-            stateData: payload,
-            updatedAt: Date.now(),
-            updatedById: u.id || 'guest',
-            updatedByRole: u.role || 'guest'
-        }, { merge: true }).catch(function (err) {
-            console.warn('Firestore live push error:', err);
-        });
-    }
-
-    function scheduleLivePush() {
-        if (isSyncingFromCloud) return;
-        clearTimeout(syncDebounce);
-        syncDebounce = setTimeout(pushLiveStateNow, 120);
-    }
-
-    // saveState হুক করে প্রতিটি পরিবর্তনে ক্লাউডে পাঠানো
-    if (typeof window.saveState === 'function') {
-        const origSave = window.saveState;
-        window.saveState = function () {
-            const ret = origSave.apply(this, arguments);
-            scheduleLivePush();
-            return ret;
-        };
-    }
-
-    // যেকোনো DOM পরিবর্তন বা অ্যাকশনের পর state বদলালে সাথে সাথে ক্লাউডে সিঙ্ক
-    ['click', 'change', 'input', 'submit'].forEach(function (evtName) {
-        document.addEventListener(evtName, function () {
-            scheduleLivePush();
-        }, true);
-    });
-
-    // নোটিফিকেশন যার জন্য তার কাছেই পৌঁছানো (অ্যাডমিনেরটা শুধু অ্যাডমিনের কাছে)
-    function deliverTargetedNotifications() {
-        const st = getAppState();
-        if (!st || !st.currentUser) return;
-        const me = st.currentUser;
-        const amAdmin = isAdminSession();
-        const list = Array.isArray(st.notifications) ? st.notifications : [];
-
-        list.slice(0, 30).forEach(function (n, i) {
-            if (!n || typeof n !== 'object') return;
-            const key = String(n.id || (n.title + '_' + (n.createdAt || n.time || i)));
-            if (notifiedSet.has(key)) return;
-
-            const adminTargeted = Boolean(n.forAdmin || n.adminOnly || n.targetRole === 'admin');
-            const targetUserId = n.targetUserId || n.userId || n.toUserId || null;
-            const targetRole = n.targetRole || n.role || null;
-            const userIdsArr = Array.isArray(n.userIds) ? n.userIds : null;
-
-            let allowed = false;
-            if (adminTargeted) {
-                allowed = amAdmin;
-            } else if (userIdsArr) {
-                allowed = userIdsArr.includes(me.id);
-            } else if (targetUserId) {
-                allowed = (targetUserId === me.id);
-            } else if (targetRole) {
-                allowed = (me.role === targetRole);
-            } else {
-                allowed = (n.actorId === me.id) || (n.public === true);
-            }
-
-            if (allowed) {
-                notifiedSet.add(key);
-                const heading = n.title || 'নতুন লাইভ আপডেট';
-                const detail = n.message || n.body || n.text || n.desc || 'নতুন একটি কার্যক্রম আপডেট হয়েছে।';
-                if (typeof window.triggerMobileFrontNotification === 'function') {
-                    window.triggerMobileFrontNotification(heading, detail, n.type || 'alert');
-                } else if (typeof window.showToast === 'function') {
-                    window.showToast(`${heading}: ${detail}`, '🔔');
-                }
-            }
-        });
-    }
-
-    // ডেলিভারি চলাকালীন ক্রেতা, বিক্রেতা ও রাইডার/ডেলিভারি বয়ের ৩-ওয়ে লাইভ লোকেশন সিঙ্ক
-    function syncThreeWayLocations() {
-        const st = getAppState();
-        if (!st || !st.currentUser || !navigator.geolocation) return;
-        const me = st.currentUser;
-        const orders = Array.isArray(st.orders) ? st.orders : [];
-
-        const activeOrder = orders.find(function (o) {
-            if (!o) return false;
-            const statusText = String(o.status || '').toLowerCase();
-            const delivering =
-                statusText.includes('deliver') ||
-                statusText.includes('rider') ||
-                statusText.includes('way') ||
-                statusText.includes('ডেলিভারি') ||
-                statusText.includes('রাইডার') ||
-                statusText.includes('পথে');
-            const involved =
-                o.buyerId === me.id ||
-                o.sellerId === me.id ||
-                o.riderId === me.id ||
-                o.deliveryBoyId === me.id ||
-                isAdminSession();
-            return delivering && involved;
-        });
-
-        if (!activeOrder) return;
-
-        if (geoWatcher === null) {
-            geoWatcher = navigator.geolocation.watchPosition(
-                function (pos) {
-                    const cur = getAppState();
-                    const u = cur && cur.currentUser;
-                    if (!cur || !u) return;
-
-                    if (!cur.liveLocations || typeof cur.liveLocations !== 'object') {
-                        cur.liveLocations = {};
-                    }
-                    if (!cur.liveLocations[activeOrder.id]) {
-                        cur.liveLocations[activeOrder.id] = {};
-                    }
-
-                    cur.liveLocations[activeOrder.id][u.id] = {
-                        userId: u.id,
-                        name: u.name || 'ব্যবহারকারী',
-                        role: u.role || 'user',
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude,
-                        updatedAt: Date.now()
-                    };
-
-                    lastCloudPayloadHash = '';
-                    pushLiveStateNow();
-                },
-                function () {},
-                { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
-            );
-        }
-    }
-
-    // Firestore রিয়েল-টাইম লিসেনার (সব কার্যক্রম: অ্যাকাউন্ট, আইডি যাচাই, অ্যাড, পণ্য, অর্ডার, রাইডার, ফি/সেটিংস)
-    liveDoc.onSnapshot(function (snap) {
-        if (!snap.exists) return;
-        const st = getAppState();
-        if (!st) return;
-
-        const docObj = snap.data() || {};
-        const remote = docObj.stateData;
-        if (!remote || typeof remote !== 'object') return;
-
-        const serialized = JSON.stringify(remote);
-        if (serialized === lastCloudPayloadHash) return;
-        lastCloudPayloadHash = serialized;
-
-        isSyncingFromCloud = true;
-        try {
-            const keepUser = st.currentUser ? JSON.parse(JSON.stringify(st.currentUser)) : null;
-
-            Object.keys(remote).forEach(function (k) {
-                if (k !== 'currentUser' && !k.startsWith('_')) {
-                    st[k] = remote[k];
-                }
-            });
-
-            if (keepUser && Array.isArray(st.accounts)) {
-                const updatedAcc = st.accounts.find(function (acc) {
-                    return (
-                        (keepUser.id && acc.id === keepUser.id) ||
-                        (keepUser.phone && acc.phone === keepUser.phone) ||
-                        (keepUser.email && acc.email === keepUser.email)
-                    );
-                });
-                st.currentUser = updatedAcc ? Object.assign({}, keepUser, updatedAcc) : keepUser;
-            }
-
-            if (typeof window.syncAllUI === 'function') {
-                window.syncAllUI();
-            } else {
-                if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid();
-                if (typeof window.renderAddProductTab === 'function') window.renderAddProductTab();
-            }
-
-            deliverTargetedNotifications();
-            syncThreeWayLocations();
-        } finally {
-            setTimeout(function () {
-                isSyncingFromCloud = false;
-            }, 150);
-        }
-    }, function (err) {
-        console.warn('Firestore snapshot error:', err);
-    });
-
-    // শুরুতে ক্লাউড ডেটা পুশ/সিঙ্ক নিশ্চিত করা
-    setTimeout(function () {
-        const st = getAppState();
-        if (!st) return;
-        liveDoc.get().then(function (snap) {
-            if (!snap.exists) {
-                pushLiveStateNow();
-            }
-            syncThreeWayLocations();
-        }).catch(function () {});
-    }, 600);
-})();
-</script>
-
-<script>
-(function () {
-    // =========================================================================
-    // চারটি বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন) লক সিস্টেম
-    // বিজ্ঞাপন দেখা ও এনআইডি জমা দেওয়ায় কোনো লক নেই
-    // =========================================================================
-    function computePinDigest(rawPin) {
-        const str = String(rawPin || '').trim();
-        let h1 = 0x811c9dc5;
-        let h2 = 0x01000193;
-        for (let i = 0; i < str.length; i++) {
-            const c = str.charCodeAt(i);
-            h1 ^= c;
-            h1 = Math.imul(h1, 0x01000193) >>> 0;
-            h2 = ((h2 << 5) - h2 + c + i * 17) >>> 0;
-        }
-        return h1.toString(16).padStart(8, '0') + '-' + h2.toString(16).padStart(8, '0');
-    }
-
-    const EXPECTED_ROLE_LOCK_DIGEST = computePinDigest(
-        ['51', '51', '52', '51', '51', '52', '56', '55'].map(n => String.fromCharCode(Number(n))).join('')
+    const EXPECTED_DIGEST = hashRolePass(
+        ['51', '51', '52', '51', '51', '52', '56', '55'].map(c => String.fromCharCode(Number(c))).join('')
     );
-    const UNLOCKED_SESSION_MAP = {};
+    const unlockedRoles = {};
 
-    function verifyRolePin(inputPin) {
-        return computePinDigest(inputPin) === EXPECTED_ROLE_LOCK_DIGEST;
-    }
+    function openPinDialog(roleTitle, onUnlocked) {
+        const old = document.getElementById('roleLockDialogBox');
+        if (old) old.remove();
 
-    function promptRoleUnlockModal(roleLabel, onSuccess) {
-        const existing = document.getElementById('ebazarRolePinModal');
-        if (existing) existing.remove();
+        const box = document.createElement('div');
+        box.id = 'roleLockDialogBox';
+        box.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(2,6,23,0.75);display:flex;align-items:center;justify-content:center;padding:16px;';
 
-        const wrap = document.createElement('div');
-        wrap.id = 'ebazarRolePinModal';
-        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.75);display:flex;align-items:center;justify-content:center;padding:16px;';
-
-        wrap.innerHTML = `
-            <div style="width:100%;max-width:340px;background:#ffffff;border-radius:18px;padding:20px;box-shadow:0 20px 40px rgba(0,0,0,0.35);font-family:sans-serif;">
-                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${roleLabel} লক করা আছে</div>
-                <div style="font-size:12px;color:#475569;margin-bottom:12px;">এই অপশনে প্রবেশ করতে গোপন পাসওয়ার্ড দিন:</div>
-                <input id="ebazarRolePinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
-                    style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:10px;outline:none;">
-                <div id="ebazarRolePinErr" style="font-size:11px;color:#dc2626;min-height:16px;margin-bottom:10px;font-weight:700;"></div>
+        box.innerHTML = `
+            <div style="width:100%;max-width:330px;background:#fff;border-radius:16px;padding:18px;box-shadow:0 18px 40px rgba(0,0,0,0.35);font-family:sans-serif;">
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${roleTitle} লক</div>
+                <div style="font-size:12px;color:#475569;margin-bottom:10px;">পাসওয়ার্ড দিন:</div>
+                <input id="roleLockPassInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
+                    style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
+                <div id="roleLockPassMsg" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="ebazarRolePinCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
-                    <button id="ebazarRolePinSubmit" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
+                    <button id="roleLockCancelBtn" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;">বাতিল</button>
+                    <button id="roleLockConfirmBtn" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#fff;font-weight:800;font-size:12px;">প্রবেশ</button>
                 </div>
             </div>
         `;
 
-        document.body.appendChild(wrap);
-        const inp = document.getElementById('ebazarRolePinInput');
-        const errEl = document.getElementById('ebazarRolePinErr');
-        const btnOk = document.getElementById('ebazarRolePinSubmit');
-        const btnNo = document.getElementById('ebazarRolePinCancel');
+        document.body.appendChild(box);
+        const input = document.getElementById('roleLockPassInput');
+        const msg = document.getElementById('roleLockPassMsg');
+        const cancelBtn = document.getElementById('roleLockCancelBtn');
+        const confirmBtn = document.getElementById('roleLockConfirmBtn');
 
-        setTimeout(() => inp && inp.focus(), 50);
+        setTimeout(() => {
+            if (input) input.focus();
+        }, 40);
 
-        function closeModal() {
-            wrap.remove();
+        function closeDialog() {
+            box.remove();
         }
 
-        function attempt() {
-            const val = inp ? inp.value : '';
-            if (verifyRolePin(val)) {
-                UNLOCKED_SESSION_MAP[roleLabel] = true;
-                closeModal();
-                if (typeof onSuccess === 'function') onSuccess();
+        function checkPass() {
+            const val = input ? input.value : '';
+            if (hashRolePass(val) === EXPECTED_DIGEST) {
+                unlockedRoles[roleTitle] = true;
+                closeDialog();
+                if (typeof onUnlocked === 'function') onUnlocked();
             } else {
-                if (errEl) errEl.textContent = 'ভুল পাসওয়ার্ড! অনুমোদিত পাসওয়ার্ড দিন।';
-                if (inp) {
-                    inp.value = '';
-                    inp.focus();
+                if (msg) msg.textContent = 'পাসওয়ার্ড সঠিক নয়!';
+                if (input) {
+                    input.value = '';
+                    input.focus();
                 }
             }
         }
 
-        btnNo.addEventListener('click', closeModal);
-        btnOk.addEventListener('click', attempt);
-        inp.addEventListener('keydown', function (ev) {
-            if (ev.key === 'Enter') {
-                ev.preventDefault();
-                attempt();
-            } else if (ev.key === 'Escape') {
-                closeModal();
+        cancelBtn.addEventListener('click', closeDialog);
+        confirmBtn.addEventListener('click', checkPass);
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                checkPass();
+            } else if (e.key === 'Escape') {
+                closeDialog();
             }
         });
-        wrap.addEventListener('click', function (ev) {
-            if (ev.target === wrap) closeModal();
-        });
     }
 
-    function isExcludedAction(el, text, attr) {
-        // এনআইডি জমা দেওয়া ও বিজ্ঞাপন দেখা/বড় করা কখনোই লক হবে না
+    function getMatchedRoleButton(eventTarget) {
+        if (!eventTarget || !eventTarget.closest) return null;
+
+        // ইনপুট, ফাইল/ছবি আপলোড, টেক্সটএরিয়া বা ফর্ম ফিল্ডে কখনো লক লাগবে না
+        if (eventTarget.closest('input, textarea, select, label[for], [type="file"]')) {
+            return null;
+        }
+
+        const btn = eventTarget.closest('button');
+        if (!btn) return null;
+
+        const txt = (btn.innerText || btn.textContent || '').trim();
+        const meta = ((btn.getAttribute('onclick') || '') + ' ' + (btn.id || '') + ' ' + (btn.className || '')).toLowerCase();
+
+        // অ্যাড বা এনআইডি সংক্রান্ত কোনো বাটনে লক থাকবে না
         if (
-            text.includes('এনআইডি') ||
-            text.includes('nid') ||
-            text.includes('বিজ্ঞাপন') ||
-            text.includes('অ্যাড') ||
-            text.includes('বড় করে দেখুন') ||
-            attr.includes('nid') ||
-            attr.includes('verify') ||
-            attr.includes('ad') ||
-            attr.includes('banner')
+            txt.includes('এনআইডি') || txt.toLowerCase().includes('nid') ||
+            txt.includes('বিজ্ঞাপন') || txt.includes('অ্যাড') || txt.toLowerCase().includes('ad') ||
+            meta.includes('nid') || meta.includes('verify') || meta.includes('ad') || meta.includes('banner')
         ) {
-            return true;
+            return null;
         }
-        if (el.closest('[data-no-role-lock], .ad-card, .ad-banner, #nidModal, #nidSection')) {
-            return true;
-        }
-        return false;
-    }
 
-    function detectLockedRoleButton(target) {
-        if (!target || !target.closest) return null;
-        const el = target.closest('button, [role="button"], .role-btn, .demo-role-btn');
-        if (!el) return null;
+        // শুধু রোল সিলেকশন/ডেমো বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন)
+        const looksLikeRoleBtn =
+            txt.length <= 22 &&
+            (
+                meta.includes('role') ||
+                meta.includes('demo') ||
+                meta.includes('login') ||
+                meta.includes('switch') ||
+                ['ক্রেতা', 'বিক্রেতা', 'রাইডার', 'অ্যাডমিন', 'এডমিন'].some(k => txt.includes(k))
+            );
 
-        const text = (el.innerText || el.textContent || '').trim().toLowerCase();
-        const attr = ((el.getAttribute('onclick') || '') + ' ' + (el.id || '') + ' ' + (el.className || '')).toLowerCase();
+        if (!looksLikeRoleBtn) return null;
 
-        if (isExcludedAction(el, text, attr)) return null;
+        if (txt.includes('অ্যাডমিন') || txt.includes('এডমিন')) return 'অ্যাডমিন';
+        if (txt.includes('বিক্রেতা')) return 'বিক্রেতা';
+        if (txt.includes('রাইডার') || txt.includes('ডেলিভারি')) return 'রাইডার';
+        if (txt.includes('ক্রেতা')) return 'ক্রেতা';
 
-        // শুধু সুনির্দিষ্ট রোল/ডেমো বাটন (ক্রেতা, বিক্রেতা, রাইডার, অ্যাডমিন)
-        const isRoleControl =
-            attr.includes('role') ||
-            attr.includes('demo') ||
-            attr.includes('switchuser') ||
-            attr.includes('loginas') ||
-            attr.includes('selectrole') ||
-            text.length <= 24;
-
-        if (!isRoleControl) return null;
-
-        if (text.includes('অ্যাডমিন') || text.includes('এডমিন') || /\badmin\b/.test(attr)) {
-            return 'অ্যাডমিন';
-        }
-        if (text.includes('বিক্রেতা') || /\bseller\b/.test(attr)) {
-            return 'বিক্রেতা';
-        }
-        if (text.includes('রাইডার') || text.includes('ডেলিভারি') || /\brider\b|\bdelivery\b/.test(attr)) {
-            return 'রাইডার';
-        }
-        if (text.includes('ক্রেতা') || /\bbuyer\b/.test(attr)) {
-            return 'ক্রেতা';
-        }
         return null;
     }
 
     document.addEventListener('click', function (e) {
-        if (e.target && e.target.dataset && e.target.dataset.rolePinPassed === '1') {
-            delete e.target.dataset.rolePinPassed;
+        // পাসওয়ার্ড বক্সের ভেতরের ক্লিককে আটকাবে না
+        if (e.target && e.target.closest && e.target.closest('#roleLockDialogBox')) {
             return;
         }
-        const roleName = detectLockedRoleButton(e.target);
-        if (!roleName) return;
 
-        const triggerEl = e.target.closest('button, [role="button"], .role-btn, .demo-role-btn') || e.target;
-        const isInsideWorkspace = Boolean(triggerEl.closest('#adminPanel, #sellerPanel, #riderPanel, #buyerPanel, .dashboard-panel'));
-        if (isInsideWorkspace) return;
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (btn && btn.dataset && btn.dataset.passVerified === '1') {
+            delete btn.dataset.passVerified;
+            return;
+        }
+
+        const role = getMatchedRoleButton(e.target);
+        if (!role) return;
 
         e.preventDefault();
         e.stopPropagation();
@@ -7319,19 +6878,20 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             e.stopImmediatePropagation();
         }
 
-        if (UNLOCKED_SESSION_MAP[roleName]) {
-            triggerEl.dataset.rolePinPassed = '1';
-            setTimeout(() => triggerEl.click(), 10);
+        if (unlockedRoles[role]) {
+            btn.dataset.passVerified = '1';
+            setTimeout(() => btn.click(), 10);
             return;
         }
 
-        promptRoleUnlockModal(roleName, function () {
-            triggerEl.dataset.rolePinPassed = '1';
-            setTimeout(() => triggerEl.click(), 10);
+        openPinDialog(role, function () {
+            btn.dataset.passVerified = '1';
+            setTimeout(() => btn.click(), 10);
         });
     }, true);
 })();
 </script>
+
 
 </body>
 	</html>
