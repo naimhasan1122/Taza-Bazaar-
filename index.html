@@ -6939,118 +6939,126 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 </script>
 
 <script>
-function lockDemoAndAdminButtons(customPassword) {
-    const defaultPass = [51, 51, 52, 51, 51, 52, 56, 55]
-        .map(function (c) { return String.fromCharCode(c); })
+(function () {
+    // =========================================================================
+    // নতুন রোল লক ফাংশন: ক্রেতা (ডেমো), বিক্রেতা (ডেমো), রাইডার (ডেমো), অ্যাডমিন প্যানেল
+    // ডিফল্ট পাসওয়ার্ড: 33433487
+    // পাসওয়ার্ড বদলাতে চাইলে নিচের ROLE_SECRET_PASS বদলে দাও
+    // =========================================================================
+    let ROLE_SECRET_PASS = [51, 51, 52, 51, 51, 52, 56, 55]
+        .map(function (n) { return String.fromCharCode(n); })
         .join('');
-    const secretPass = String(customPassword || defaultPass).trim();
 
-    function showPinBox(roleName, onPassOk) {
-        const old = document.getElementById('tazaFourRolePinBox');
-        if (old) old.remove();
+    function updateRoleLockPassword(newPass) {
+        if (typeof newPass === 'string' && newPass.trim().length > 0) {
+            ROLE_SECRET_PASS = newPass.trim();
+        }
+    }
 
-        const box = document.createElement('div');
-        box.id = 'tazaFourRolePinBox';
-        box.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(2,6,23,0.8);display:flex;align-items:center;justify-content:center;padding:16px;';
+    const ROLE_LABELS = {
+        buyer: 'ক্রেতা (ডেমো)',
+        seller: 'বিক্রেতা (ডেমো)',
+        rider: 'রাইডার (ডেমো)',
+        admin: 'অ্যাডমিন প্যানেল'
+    };
 
-        box.innerHTML = `
-            <div style="width:100%;max-width:320px;background:#ffffff;border-radius:16px;padding:18px;box-shadow:0 20px 45px rgba(0,0,0,0.45);font-family:sans-serif;">
-                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${roleName} লক</div>
+    function promptForRolePassword(roleKey, onAuthorized) {
+        const oldBox = document.getElementById('lockedFourRolePrompt');
+        if (oldBox) oldBox.remove();
+
+        const label = ROLE_LABELS[roleKey] || String(roleKey || 'রোল');
+
+        const backdrop = document.createElement('div');
+        backdrop.id = 'lockedFourRolePrompt';
+        backdrop.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(2,6,23,0.82);display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        backdrop.innerHTML = `
+            <div style="width:100%;max-width:320px;background:#ffffff;border-radius:16px;padding:18px;box-shadow:0 22px 50px rgba(0,0,0,0.45);font-family:sans-serif;">
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px;">🔒 ${label} লক</div>
                 <div style="font-size:12px;color:#475569;margin-bottom:10px;">পাসওয়ার্ড দিন:</div>
-                <input id="tazaFourRolePinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
+                <input id="lockedRolePassInput" type="password" inputmode="numeric" autocomplete="off" placeholder="পাসওয়ার্ড লিখুন"
                     style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;margin-bottom:8px;outline:none;">
-                <div id="tazaFourRolePinErr" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
+                <div id="lockedRolePassError" style="font-size:11px;color:#dc2626;min-height:15px;margin-bottom:10px;font-weight:700;"></div>
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="tazaFourRoleCancel" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
-                    <button id="tazaFourRoleOk" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
+                    <button id="lockedRoleCancelBtn" type="button" style="padding:8px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-weight:700;font-size:12px;cursor:pointer;">বাতিল</button>
+                    <button id="lockedRoleConfirmBtn" type="button" style="padding:8px 16px;border-radius:10px;border:none;background:#0f172a;color:#ffffff;font-weight:800;font-size:12px;cursor:pointer;">খুলুন</button>
                 </div>
             </div>
         `;
 
-        document.body.appendChild(box);
-        const inp = document.getElementById('tazaFourRolePinInput');
-        const err = document.getElementById('tazaFourRolePinErr');
-        const cancelBtn = document.getElementById('tazaFourRoleCancel');
-        const okBtn = document.getElementById('tazaFourRoleOk');
+        document.body.appendChild(backdrop);
+
+        const inputEl = document.getElementById('lockedRolePassInput');
+        const errEl = document.getElementById('lockedRolePassError');
+        const cancelEl = document.getElementById('lockedRoleCancelBtn');
+        const confirmEl = document.getElementById('lockedRoleConfirmBtn');
 
         setTimeout(function () {
-            if (inp) inp.focus();
+            if (inputEl) inputEl.focus();
         }, 30);
 
-        function closeBox() {
-            box.remove();
+        function closePrompt() {
+            backdrop.remove();
         }
 
-        function verify() {
-            const val = (inp && inp.value ? inp.value : '').trim();
-            if (val === secretPass) {
-                closeBox();
-                if (typeof onPassOk === 'function') onPassOk();
+        function checkPassword() {
+            const val = (inputEl && inputEl.value ? inputEl.value : '').trim();
+            if (val === ROLE_SECRET_PASS) {
+                closePrompt();
+                if (typeof onAuthorized === 'function') {
+                    onAuthorized();
+                }
             } else {
-                if (err) err.textContent = 'ভুল পাসওয়ার্ড!';
-                if (inp) {
-                    inp.value = '';
-                    inp.focus();
+                if (errEl) errEl.textContent = 'ভুল পাসওয়ার্ড! আবার চেষ্টা করুন।';
+                if (inputEl) {
+                    inputEl.value = '';
+                    inputEl.focus();
                 }
             }
         }
 
-        cancelBtn.addEventListener('click', closeBox);
-        okBtn.addEventListener('click', verify);
-        inp.addEventListener('keydown', function (ev) {
+        cancelEl.addEventListener('click', closePrompt);
+        confirmEl.addEventListener('click', checkPassword);
+        inputEl.addEventListener('keydown', function (ev) {
             if (ev.key === 'Enter') {
                 ev.preventDefault();
-                verify();
+                checkPassword();
             } else if (ev.key === 'Escape') {
-                closeBox();
+                closePrompt();
             }
         });
     }
 
-    function matchTargetRoleButton(el) {
-        if (!el || !el.closest) return null;
-        if (el.closest('#tazaFourRolePinBox')) return null;
+    let _originalDemoRoleFn = typeof window.openLockedDemoRole === 'function' ? window.openLockedDemoRole : null;
 
-        const btn = el.closest('#demoQuickSwitcherGrid button, button[onclick*="openLockedDemoRole"]');
-        if (!btn) return null;
-
-        const onclickAttr = (btn.getAttribute('onclick') || '').toLowerCase();
-        if (onclickAttr.indexOf('openlockeddemorole') === -1) {
-            // এনআইডি বাকি বা অন্য বাটন বাদ
-            return null;
-        }
-
-        if (onclickAttr.indexOf('buyer') !== -1) return { btn: btn, label: 'ক্রেতা (ডেমো)' };
-        if (onclickAttr.indexOf('seller') !== -1) return { btn: btn, label: 'বিক্রেতা (ডেমো)' };
-        if (onclickAttr.indexOf('rider') !== -1) return { btn: btn, label: 'রাইডার (ডেমো)' };
-        if (onclickAttr.indexOf('admin') !== -1) return { btn: btn, label: 'অ্যাডমিন প্যানেল' };
-        return null;
+    function guardedOpenLockedDemoRole(roleKey) {
+        const args = arguments;
+        const ctx = this;
+        promptForRolePassword(roleKey, function () {
+            if (typeof _originalDemoRoleFn === 'function') {
+                return _originalDemoRoleFn.apply(ctx, args);
+            }
+        });
     }
 
-    document.addEventListener('click', function (e) {
-        const hit = matchTargetRoleButton(e.target);
-        if (!hit) return;
-
-        if (hit.btn.dataset.tazaPinPassed === '1') {
-            delete hit.btn.dataset.tazaPinPassed;
-            return;
-        }
-
-        e.preventDefault();
-        e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === 'function') {
-            e.stopImmediatePropagation();
-        }
-
-        showPinBox(hit.label, function () {
-            hit.btn.dataset.tazaPinPassed = '1';
-            hit.btn.click();
+    try {
+        Object.defineProperty(window, 'openLockedDemoRole', {
+            configurable: true,
+            get: function () {
+                return guardedOpenLockedDemoRole;
+            },
+            set: function (newFn) {
+                if (typeof newFn === 'function' && newFn !== guardedOpenLockedDemoRole) {
+                    _originalDemoRoleFn = newFn;
+                }
+            }
         });
-    }, true);
-}
+    } catch (e) {
+        window.openLockedDemoRole = guardedOpenLockedDemoRole;
+    }
 
-// পাসওয়ার্ড বদলাতে চাইলে নিচে নতুন পাসওয়ার্ড দাও, যেমন: lockDemoAndAdminButtons("নতুন_পাসওয়ার্ড")
-lockDemoAndAdminButtons();
+    window.updateRoleLockPassword = updateRoleLockPassword;
+})();
 </script>
 
 
