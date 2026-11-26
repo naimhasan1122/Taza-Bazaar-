@@ -6025,6 +6025,131 @@ function deleteSellerProduct(productId) {
     syncAllUI();
     triggerMobileFrontNotification('পণ্য ডিলিট হয়েছে', `"${prod.name}" তালিকা থেকে মুছে ফেলা হয়েছে।`, 'alert');
 }
+// শুধুমাত্র পণ্যের মালিক (বা অ্যাডমিন) অফ/অন বা ডিলিট করতে পারবেন; অন্য কারো সামনে অফ করা পণ্য যাবে না
+function toggleProductVisibility(productId) {
+    const u = state.currentUser;
+    const prod = (state.products || []).find(p => p.id === productId);
+    if (!prod || !u) return;
+
+    if (!isAdminActive() && prod.sellerId !== u.id) {
+        return showToast('শুধুমাত্র এই পণ্যের বিক্রেতাই অফ/অন করতে পারবেন!', '🔒');
+    }
+
+    prod.hiddenBySeller = !Boolean(prod.hiddenBySeller);
+    saveState();
+    syncAllUI();
+    showToast(
+        prod.hiddenBySeller
+            ? `"${prod.name}" অফ করা হয়েছে — এখন ক্রেতা বা অন্যদের সামনে যাবে না`
+            : `"${prod.name}" অন করা হয়েছে — এখন সবাই দেখতে পাবে`,
+        prod.hiddenBySeller ? '🙈' : '👁️'
+    );
+}
+
+function deleteSellerProduct(productId) {
+    const u = state.currentUser;
+    const idx = (state.products || []).findIndex(p => p.id === productId);
+    if (idx === -1 || !u) return;
+
+    const prod = state.products[idx];
+    if (!isAdminActive() && prod.sellerId !== u.id) {
+        return showToast('শুধুমাত্র এই পণ্যের বিক্রেতাই পণ্য ডিলিট করতে পারবেন!', '🔒');
+    }
+
+    state.products.splice(idx, 1);
+    if (Array.isArray(state.cart)) {
+        state.cart = state.cart.filter(c => c.productId !== productId);
+    }
+
+    recordHistoryEntry({
+        category: 'পণ্য ডিলিট',
+        title: `${u.name} "${prod.name}" পণ্যটি ডিলিট করেছেন`,
+        actor: u.name,
+        amount: prod.price || 0,
+        decision: 'rejected',
+        reason: 'বিক্রেতা কর্তৃক পণ্য ডিলিট করা হয়েছে',
+        userIds: [u.id]
+    });
+
+    saveState();
+    syncAllUI();
+    triggerMobileFrontNotification('পণ্য ডিলিট হয়েছে', `"${prod.name}" তালিকা থেকে মুছে ফেলা হয়েছে।`, 'alert');
+}
+
+// বিক্রেতার পণ্যের তালিকায় নিজের পণ্যের জন্য "অফ/অন" ও "ডিলিট" বাটন যুক্ত করা
+const _origRenderAddProductTabForControls = window.renderAddProductTab;
+window.renderAddProductTab = function () {
+    if (typeof _origRenderAddProductTabForControls === 'function') {
+        _origRenderAddProductTabForControls.apply(this, arguments);
+    }
+    const u = state.currentUser;
+    const listEl = document.getElementById('sellerMyProductsList');
+    if (!u || u.role !== 'seller' || !listEl) return;
+
+    const myProds = (state.products || []).filter(p => p.sellerId === u.id);
+    if (!myProds.length) return;
+
+    listEl.innerHTML = myProds.map(p => {
+        const isHidden = Boolean(p.hiddenBySeller);
+        const canManage = isAdminActive() || p.sellerId === u.id;
+        return `
+            <div class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <img src="${p.img || getCategoryFallbackImg(p.category)}" class="w-11 h-11 rounded-lg object-cover shrink-0">
+                    <div class="min-w-0">
+                        <div class="font-bold text-slate-800 truncate">${p.name}</div>
+                        <div class="text-[11px] text-slate-500">${formatMoney(p.price)}/${p.unit} • স্টক: ${toBn(p.stock)} • ${p.hasRider !== false ? 'রাইডার যুক্ত' : 'সরাসরি দোকান'}</div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0">
+                    <span class="px-2 py-0.5 rounded-full font-bold text-[10px] ${isHidden ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800'}">${isHidden ? 'অফ আছে' : 'লাইভ'}</span>
+                    ${canManage ? `
+                        <button type="button" onclick="toggleProductVisibility('${p.id}')" class="px-2 py-1 rounded-lg font-extrabold text-[10px] ${isHidden ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-amber-500 hover:bg-amber-600 text-slate-950'}">${isHidden ? '🟢 অন করুন' : '⏸️ অফ করুন'}</button>
+                        <button type="button" onclick="deleteSellerProduct('${p.id}')" class="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-[10px]">🗑️ ডিলিট</button>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+};
+
+// অফ করা পণ্য যেন ক্রেতা বা অন্য বিক্রেতার সামনে না যায় (শুধু মালিক বা অ্যাডমিন দেখতে ও অন করতে পারবেন)
+const _origRenderProductsGridForVisibility = window.renderProductsGrid;
+if (typeof _origRenderProductsGridForVisibility === 'function') {
+    window.renderProductsGrid = function () {
+        const allProds = state.products || [];
+        const hiddenSnapshot = allProds.map(p => ({ id: p.id, hiddenBySeller: Boolean(p.hiddenBySeller), sellerId: p.sellerId }));
+        const u = state.currentUser;
+
+        const maskedIds = [];
+        allProds.forEach(p => {
+            const isOwnerOrAdmin = isAdminActive() || (u && p.sellerId === u.id);
+            if (p.hiddenBySeller && !isOwnerOrAdmin) {
+                maskedIds.push({ prod: p, origStock: p.stock, origName: p.name });
+                p._tempHiddenForViewer = true;
+            }
+        });
+
+        const gridEl = document.getElementById('productsGrid');
+        _origRenderProductsGridForVisibility.apply(this, arguments);
+
+        if (gridEl && maskedIds.length) {
+            const hiddenProdIds = new Set(maskedIds.map(m => m.prod.id));
+            allProds.forEach(p => {
+                if (hiddenProdIds.has(p.id)) {
+                    const card = gridEl.querySelector(`[onclick*="${p.id}"]`)?.closest('div.rounded-2xl, div.rounded-xl, article');
+                    if (card) card.remove();
+                }
+            });
+        }
+
+        allProds.forEach(p => {
+            delete p._tempHiddenForViewer;
+        });
+        void hiddenSnapshot;
+    };
+}
+
 </script>
 </body>
 	</html>
