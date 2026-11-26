@@ -8473,6 +8473,297 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    const dbRef = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
+        ? firebase.firestore().collection('ebazar_realtime_app').doc('taza_bazar_live_fast_v1')
+        : null;
+
+    let isRemoteSyncing = false;
+    let fastPushTimer = null;
+    let lastPushHash = '';
+    let notifiedSet = new Set();
+    let audioCtx = null;
+
+    function getSt() {
+        if (typeof state !== 'undefined' && state && typeof state === 'object') {
+            window.state = state;
+            return state;
+        }
+        return (window.state && typeof window.state === 'object') ? window.state : null;
+    }
+
+    function isAdm() {
+        try {
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
+        } catch (_) {}
+        const s = getSt();
+        const u = s && s.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
+    }
+
+    // হালকা "টুং" নোটিফিকেশন সাউন্ড (ব্রাউজার সাউন্ড আনলক হলে সাথে সাথে বাজবে)
+    function playTungSound() {
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return;
+            if (!audioCtx) audioCtx = new Ctx();
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(() => {});
+            }
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, now);
+            osc.frequency.exponentialRampToValueAtTime(1320, now + 0.08);
+            osc.frequency.exponentialRampToValueAtTime(660, now + 0.22);
+
+            gain.gain.setValueAtTime(0.001, now);
+            gain.gain.exponentialRampToValueAtTime(0.18, now + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now);
+            osc.stop(now + 0.26);
+        } catch (_) {}
+    }
+
+    ['pointerdown', 'keydown', 'touchstart'].forEach(evt => {
+        document.addEventListener(evt, function () {
+            try {
+                const Ctx = window.AudioContext || window.webkitAudioContext;
+                if (Ctx && !audioCtx) audioCtx = new Ctx();
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+            } catch (_) {}
+        }, { passive: true });
+    });
+
+    function showLiveAlert(title, body) {
+        playTungSound();
+        if (typeof window.triggerMobileFrontNotification === 'function') {
+            window.triggerMobileFrontNotification(title, body, 'alert');
+        } else if (typeof window.showToast === 'function') {
+            window.showToast(`${title}: ${body}`, '🔔');
+        }
+    }
+
+    // শুধু প্রয়োজনীয় হালকা স্টেট দ্রুত ক্লাউডে পাঠানো (যাতে অ্যাপ স্লো না হয়)
+    function buildFastPayload(s) {
+        const clean = JSON.parse(JSON.stringify(s || {}));
+        delete clean.currentUser;
+        // বড় বেস-৬৪ ছবি থাকলে শুধু প্রয়োজনীয় ফিল্ড ঠিক রেখে সাইজ কমানো
+        if (Array.isArray(clean.products) && clean.products.length > 60) {
+            clean.products = clean.products.slice(0, 60);
+        }
+        if (Array.isArray(clean.notifications) && clean.notifications.length > 50) {
+            clean.notifications = clean.notifications.slice(0, 50);
+        }
+        return clean;
+    }
+
+    function pushFastNow() {
+        if (!dbRef || isRemoteSyncing) return;
+        const s = getSt();
+        if (!s) return;
+        try {
+            const payload = buildFastPayload(s);
+            const sig = JSON.stringify({
+                accounts: payload.accounts,
+                registrationRequests: payload.registrationRequests,
+                nidRequests: payload.nidRequests,
+                products: payload.products,
+                deletedProductIds: payload.deletedProductIds,
+                deletedAccountIds: payload.deletedAccountIds,
+                orders: payload.orders,
+                notifications: payload.notifications,
+                ads: payload.ads,
+                packageRequests: payload.packageRequests,
+                withdrawalRequests: payload.withdrawalRequests,
+                riderDeposits: payload.riderDeposits,
+                settings: payload.settings
+            });
+            if (sig === lastPushHash) return;
+            lastPushHash = sig;
+
+            dbRef.set({
+                payload: payload,
+                updatedAt: Date.now(),
+                by: (s.currentUser && s.currentUser.id) || 'guest'
+            }, { merge: true }).catch(() => {});
+        } catch (_) {}
+    }
+
+    function scheduleFastPush() {
+        if (!dbRef || isRemoteSyncing) return;
+        clearTimeout(fastPushTimer);
+        fastPushTimer = setTimeout(pushFastNow, 60);
+    }
+
+    const origSave = window.saveState;
+    if (typeof origSave === 'function') {
+        window.saveState = function () {
+            const r = origSave.apply(this, arguments);
+            scheduleFastPush();
+            return r;
+        };
+    }
+
+    // যার নোটিফিকেশন তার কাছেই টুং সাউন্ডসহ পাঠানো
+    function routeMyNotifications(s) {
+        if (!s || !s.currentUser) return;
+        const me = s.currentUser;
+        const amAdm = isAdm();
+        const list = Array.isArray(s.notifications) ? s.notifications : [];
+
+        list.slice(0, 20).forEach((n, i) => {
+            if (!n) return;
+            const id = String(n.id || `${n.title || ''}_${n.message || n.body || ''}_${n.time || i}`);
+            if (notifiedSet.has(id)) return;
+
+            const forAdmin = amAdm && Boolean(n.forAdmin || n.targetRole === 'admin' || n.adminOnly);
+            const forMe =
+                forAdmin ||
+                (Array.isArray(n.userIds) && n.userIds.includes(me.id)) ||
+                (n.targetUserId && n.targetUserId === me.id) ||
+                (n.userId && n.userId === me.id) ||
+                (n.toUserId && n.toUserId === me.id);
+
+            if (forMe) {
+                notifiedSet.add(id);
+                showLiveAlert(
+                    n.title || 'নতুন নোটিফিকেশন',
+                    n.message || n.body || n.text || 'নতুন একটি আপডেট এসেছে।'
+                );
+            }
+        });
+    }
+
+    // এক্সেপ্ট করলে পেন্ডিং তালিকা থেকে সাথে সাথে সরানো ও ইউজার অ্যাকাউন্ট আপডেট করা
+    function cleanAcceptedRequestsAndSyncUser(s) {
+        if (!s) return;
+        if (Array.isArray(s.registrationRequests)) {
+            s.registrationRequests = s.registrationRequests.filter(r => {
+                if (!r) return false;
+                const stVal = String(r.status || r.state || '').toLowerCase();
+                return !['approved', 'accepted', 'verified', 'rejected', 'declined', 'done'].includes(stVal);
+            });
+        }
+        if (Array.isArray(s.nidRequests)) {
+            s.nidRequests = s.nidRequests.filter(r => {
+                if (!r) return false;
+                const stVal = String(r.status || r.nidStatus || '').toLowerCase();
+                return !['approved', 'accepted', 'verified', 'rejected', 'declined', 'done'].includes(stVal);
+            });
+        }
+
+        if (s.currentUser && Array.isArray(s.accounts)) {
+            const cur = s.currentUser;
+            const match = s.accounts.find(a =>
+                a && ((cur.id && a.id === cur.id) || (cur.phone && a.phone === cur.phone) || (cur.email && a.email === cur.email))
+            );
+            if (match) {
+                s.currentUser = Object.assign({}, cur, match);
+                if (match.approved === true || match.status === 'approved' || match.status === 'active') {
+                    s.currentUser.approved = true;
+                    if (s.currentUser.status === 'pending') s.currentUser.status = 'approved';
+                }
+                if (match.nidStatus === 'verified' || match.nidVerified === true) {
+                    s.currentUser.nidStatus = 'verified';
+                    s.currentUser.nidVerified = true;
+                }
+            }
+        }
+    }
+
+    // যেকোনো approve/accept/verify বাটন ক্লিকের পর সাথে সাথে পেন্ডিং সরায় ও পুশ করে
+    document.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (!btn) return;
+        const txt = (btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('onclick') || '');
+        if (/approve|accept|verify|এক্সেপ্ট|অনুমোদন|যাচাই/i.test(txt)) {
+            setTimeout(() => {
+                const s = getSt();
+                if (!s) return;
+                cleanAcceptedRequestsAndSyncUser(s);
+                try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
+                try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+                pushFastNow();
+            }, 80);
+        }
+    }, true);
+
+    if (dbRef) {
+        dbRef.onSnapshot(snap => {
+            if (!snap.exists || isRemoteSyncing) return;
+            const s = getSt();
+            if (!s) return;
+
+            const docData = snap.data() || {};
+            const remote = docData.payload;
+            if (!remote || typeof remote !== 'object') return;
+
+            const delProds = new Set((remote.deletedProductIds || s.deletedProductIds || []).map(String));
+            const delAccs = new Set((remote.deletedAccountIds || s.deletedAccountIds || []).map(String));
+
+            isRemoteSyncing = true;
+            try {
+                const keepMe = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
+                Object.keys(remote).forEach(k => {
+                    if (k !== 'currentUser') s[k] = remote[k];
+                });
+
+                s.deletedProductIds = Array.from(delProds);
+                s.deletedAccountIds = Array.from(delAccs);
+                if (Array.isArray(s.products)) {
+                    s.products = s.products.filter(p => p && !delProds.has(String(p.id)));
+                }
+                if (Array.isArray(s.accounts)) {
+                    s.accounts = s.accounts.filter(a => a && !delAccs.has(String(a.id)));
+                }
+
+                s.currentUser = keepMe;
+                cleanAcceptedRequestsAndSyncUser(s);
+
+                try {
+                    if (typeof origSave === 'function') {
+                        // লোকাল স্টেট আপডেট রাখা
+                    }
+                    localStorage.setItem('ebazar_fast_state_v1', JSON.stringify({
+                        accounts: s.accounts || [],
+                        registrationRequests: s.registrationRequests || [],
+                        nidRequests: s.nidRequests || [],
+                        products: s.products || [],
+                        deletedProductIds: s.deletedProductIds || [],
+                        deletedAccountIds: s.deletedAccountIds || [],
+                        orders: s.orders || [],
+                        notifications: s.notifications || [],
+                        history: s.history || []
+                    }));
+                } catch (_) {}
+
+                try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+                try { if (typeof window.renderAdminPanel === 'function' && isAdm()) window.renderAdminPanel(); } catch (_) {}
+                routeMyNotifications(s);
+            } finally {
+                setTimeout(() => { isRemoteSyncing = false; }, 100);
+            }
+        });
+
+        setTimeout(() => {
+            const s = getSt();
+            if (!s) return;
+            dbRef.get().then(snap => {
+                if (!snap.exists) {
+                    pushFastNow();
+                }
+            }).catch(() => {});
+        }, 500);
+    }
+})();
+</script>
+
 
 </body>
 	</html>
