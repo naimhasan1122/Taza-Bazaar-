@@ -8764,6 +8764,220 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    const LIVE_DOC = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
+        ? firebase.firestore().collection('ebazar_realtime_app').doc('taza_bazar_live_fast_v1')
+        : null;
+
+    let applyingFromCloud = false;
+    let knownRegIds = new Set();
+    let knownNidIds = new Set();
+    let knownNotifIds = new Set();
+    let audioCtx = null;
+
+    function getAppSt() {
+        if (typeof state !== 'undefined' && state && typeof state === 'object') {
+            window.state = state;
+            return state;
+        }
+        return (window.state && typeof window.state === 'object') ? window.state : null;
+    }
+
+    function isAdminNow() {
+        try {
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
+        } catch (_) {}
+        const s = getAppSt();
+        const u = s && s.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
+    }
+
+    function playTung() {
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return;
+            if (!audioCtx) audioCtx = new Ctx();
+            if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+            const t = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(920, t);
+            osc.frequency.exponentialRampToValueAtTime(1380, t + 0.08);
+            osc.frequency.exponentialRampToValueAtTime(690, t + 0.22);
+            gain.gain.setValueAtTime(0.001, t);
+            gain.gain.exponentialRampToValueAtTime(0.2, t + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(t);
+            osc.stop(t + 0.26);
+        } catch (_) {}
+    }
+
+    function popAlert(title, msg) {
+        playTung();
+        if (typeof window.triggerMobileFrontNotification === 'function') {
+            window.triggerMobileFrontNotification(title, msg, 'alert');
+        } else if (typeof window.showToast === 'function') {
+            window.showToast(`${title}: ${msg}`, '🔔');
+        }
+    }
+
+    // যেকোনো ফর্ম/বাটন সাবমিটের পর সাথে সাথে ক্লাউডে পুশ করা
+    function forcePushToFirestore() {
+        if (!LIVE_DOC || applyingFromCloud) return;
+        const s = getAppSt();
+        if (!s) return;
+        try {
+            const copy = JSON.parse(JSON.stringify(s));
+            delete copy.currentUser;
+            LIVE_DOC.set({
+                payload: copy,
+                updatedAt: Date.now(),
+                by: (s.currentUser && s.currentUser.id) || 'guest'
+            }, { merge: true }).catch(() => {});
+        } catch (_) {}
+    }
+
+    // নতুন আবেদন, এনআইডি বা নোটিফিকেশন এলে সাথে সাথে অ্যালার্ট ও টুং সাউন্ড
+    function scanNewEventsAndNotify(s, isInitialLoad) {
+        if (!s) return;
+        const amAdmin = isAdminNow();
+        const me = s.currentUser;
+
+        const regs = Array.isArray(s.registrationRequests) ? s.registrationRequests : [];
+        regs.forEach((r, idx) => {
+            if (!r) return;
+            const id = String(r.id || r.phone || `reg_${idx}`);
+            if (!knownRegIds.has(id)) {
+                knownRegIds.add(id);
+                if (!isInitialLoad && amAdmin) {
+                    popAlert(
+                        'নতুন আইডি আবেদন এসেছে!',
+                        `${r.name || 'নতুন ইউজার'} (${r.role || 'user'}) আইডি খোলার আবেদন করেছেন।`
+                    );
+                }
+            }
+        });
+
+        const nids = Array.isArray(s.nidRequests) ? s.nidRequests : [];
+        nids.forEach((n, idx) => {
+            if (!n) return;
+            const id = String(n.id || n.userId || n.phone || `nid_${idx}`);
+            if (!knownNidIds.has(id)) {
+                knownNidIds.add(id);
+                if (!isInitialLoad && amAdmin) {
+                    popAlert(
+                        'নতুন এনআইডি কার্ড জমা পড়েছে!',
+                        `${n.name || 'ইউজার'} এনআইডি যাচাইয়ের জন্য আবেদন পাঠিয়েছেন।`
+                    );
+                }
+            }
+        });
+
+        const notifs = Array.isArray(s.notifications) ? s.notifications : [];
+        notifs.slice(0, 20).forEach((nf, idx) => {
+            if (!nf) return;
+            const id = String(nf.id || `${nf.title || ''}_${nf.message || nf.body || ''}_${nf.time || idx}`);
+            if (!knownNotifIds.has(id)) {
+                knownNotifIds.add(id);
+                if (!isInitialLoad && me) {
+                    const mine =
+                        (amAdmin && (nf.forAdmin || nf.targetRole === 'admin' || nf.adminOnly)) ||
+                        (Array.isArray(nf.userIds) && nf.userIds.includes(me.id)) ||
+                        (nf.targetUserId && nf.targetUserId === me.id) ||
+                        (nf.userId && nf.userId === me.id) ||
+                        (nf.toUserId && nf.toUserId === me.id);
+                    if (mine) {
+                        popAlert(
+                            nf.title || 'নতুন নোটিফিকেশন',
+                            nf.message || nf.body || nf.text || 'নতুন আপডেট এসেছে।'
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    // সাবমিট বা ক্লিকের পর ইনস্ট্যান্ট ক্লাউড পুশ
+    document.addEventListener('submit', function () {
+        setTimeout(() => {
+            try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
+            forcePushToFirestore();
+            scanNewEventsAndNotify(getAppSt(), false);
+        }, 120);
+    }, true);
+
+    document.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (!btn) return;
+        const txt = (btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('onclick') || '');
+        if (/আবেদন|জমা|submit|register|nid|approve|accept|এক্সেপ্ট|অনুমোদন/i.test(txt)) {
+            setTimeout(() => {
+                try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
+                forcePushToFirestore();
+                scanNewEventsAndNotify(getAppSt(), false);
+            }, 150);
+        }
+    }, true);
+
+    if (LIVE_DOC) {
+        let firstSnapshotDone = false;
+        LIVE_DOC.onSnapshot(snap => {
+            if (!snap.exists || applyingFromCloud) return;
+            const s = getAppSt();
+            if (!s) return;
+
+            const docData = snap.data() || {};
+            const remote = docData.payload;
+            if (!remote || typeof remote !== 'object') return;
+
+            applyingFromCloud = true;
+            try {
+                const keepUser = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
+                const delProds = new Set((remote.deletedProductIds || s.deletedProductIds || []).map(String));
+                const delAccs = new Set((remote.deletedAccountIds || s.deletedAccountIds || []).map(String));
+
+                Object.keys(remote).forEach(k => {
+                    if (k !== 'currentUser') s[k] = remote[k];
+                });
+
+                if (Array.isArray(s.products)) {
+                    s.products = s.products.filter(p => p && !delProds.has(String(p.id)));
+                }
+                if (Array.isArray(s.accounts)) {
+                    s.accounts = s.accounts.filter(a => a && !delAccs.has(String(a.id)));
+                }
+
+                if (keepUser && Array.isArray(s.accounts)) {
+                    const fresh = s.accounts.find(a =>
+                        a && ((keepUser.id && a.id === keepUser.id) || (keepUser.phone && a.phone === keepUser.phone))
+                    );
+                    s.currentUser = fresh ? Object.assign({}, keepUser, fresh) : keepUser;
+                } else {
+                    s.currentUser = keepUser;
+                }
+
+                try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+                try { if (typeof window.renderAdminPanel === 'function' && isAdminNow()) window.renderAdminPanel(); } catch (_) {}
+
+                scanNewEventsAndNotify(s, !firstSnapshotDone);
+                firstSnapshotDone = true;
+            } finally {
+                setTimeout(() => { applyingFromCloud = false; }, 100);
+            }
+        });
+    }
+
+    setTimeout(() => {
+        scanNewEventsAndNotify(getAppSt(), true);
+    }, 400);
+})();
+</script>
+
+
 
 </body>
 	</html>
