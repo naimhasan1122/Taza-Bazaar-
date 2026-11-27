@@ -8977,6 +8977,423 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    const SAFE_HISTORY_KEY = 'taza_bazar_history_locked_v3';
+    const SAFE_USERS_KEY = 'taza_bazar_users_locked_v3';
+    const SAFE_DELETED_USERS_KEY = 'taza_bazar_deleted_users_v3';
+    const SAFE_META_KEY = 'taza_bazar_admin_meta_v3';
+
+    const cloudDoc = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
+        ? firebase.firestore().collection('ebazar_realtime_app').doc('taza_bazar_live_fast_v1')
+        : null;
+
+    let isSyncingFromCloud = false;
+    let pushDebounce = null;
+
+    function getSt() {
+        if (typeof state !== 'undefined' && state && typeof state === 'object') {
+            window.state = state;
+            return state;
+        }
+        return (window.state && typeof window.state === 'object') ? window.state : null;
+    }
+
+    function isAdm() {
+        try {
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
+        } catch (_) {}
+        const s = getSt();
+        const u = s && s.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
+    }
+
+    function notifyBox(msg, icon) {
+        try {
+            if (typeof window.showToast === 'function') {
+                window.showToast(msg, icon || '✅');
+            }
+        } catch (_) {}
+    }
+
+    function makeHistKey(h, idx) {
+        if (!h || typeof h !== 'object') return 'h_' + idx;
+        if (h.id) return String(h.id);
+        return [
+            h.category || '',
+            h.title || '',
+            h.actor || '',
+            h.amount || 0,
+            h.timestamp || h.time || ''
+        ].join('||');
+    }
+
+    // হিস্ট্রি যেন রিফ্রেশ বা অ্যাপ আপডেটে কখনো না হারায়
+    function lockAndMergeHistory(s) {
+        if (!s) return;
+        try {
+            const rawSaved = localStorage.getItem(SAFE_HISTORY_KEY);
+            const savedList = rawSaved ? JSON.parse(rawSaved) : [];
+            const curList = Array.isArray(s.history) ? s.history : [];
+
+            const map = new Map();
+            (Array.isArray(savedList) ? savedList : []).concat(curList).forEach((item, idx) => {
+                if (!item || typeof item !== 'object') return;
+                const k = makeHistKey(item, idx);
+                const prev = map.get(k);
+                map.set(k, prev ? Object.assign({}, prev, item) : JSON.parse(JSON.stringify(item)));
+            });
+
+            s.history = Array.from(map.values());
+            localStorage.setItem(SAFE_HISTORY_KEY, JSON.stringify(s.history));
+        } catch (_) {}
+    }
+
+    // ডিলিট হওয়া ইউজার যেন রিফ্রেশ বা স্ন্যাপশটে কখনো ফিরে না আসে
+    function lockAndPruneDeletedUsers(s) {
+        if (!s) return;
+        try {
+            const rawDel = localStorage.getItem(SAFE_DELETED_USERS_KEY);
+            const savedDel = rawDel ? JSON.parse(rawDel) : [];
+            const curDel = Array.isArray(s.deletedAccountIds) ? s.deletedAccountIds : [];
+
+            const delSet = new Set([
+                ...(Array.isArray(savedDel) ? savedDel : []),
+                ...curDel
+            ].map(String).filter(Boolean));
+
+            s.deletedAccountIds = Array.from(delSet);
+            localStorage.setItem(SAFE_DELETED_USERS_KEY, JSON.stringify(s.deletedAccountIds));
+
+            if (Array.isArray(s.accounts)) {
+                s.accounts = s.accounts.filter(acc => acc && !delSet.has(String(acc.id)));
+            }
+            if (Array.isArray(s.registrationRequests)) {
+                s.registrationRequests = s.registrationRequests.filter(req => req && !delSet.has(String(req.accountId || req.id)));
+            }
+            localStorage.setItem(SAFE_USERS_KEY, JSON.stringify(s.accounts || []));
+        } catch (_) {}
+    }
+
+    // অ্যাডমিনের সেটিংস/ফি/অ্যাড/আপডেট ব্যাকআপ রাখা
+    function lockAdminUpdates(s) {
+        if (!s) return;
+        try {
+            const meta = {
+                settings: s.settings || s.fees || {},
+                ads: s.ads || [],
+                packageRequests: s.packageRequests || [],
+                withdrawalRequests: s.withdrawalRequests || [],
+                riderDeposits: s.riderDeposits || [],
+                savedAt: Date.now()
+            };
+            localStorage.setItem(SAFE_META_KEY, JSON.stringify(meta));
+        } catch (_) {}
+    }
+
+    function restoreProtectedData(s) {
+        if (!s) return;
+        lockAndPruneDeletedUsers(s);
+        lockAndMergeHistory(s);
+
+        try {
+            const rawMeta = localStorage.getItem(SAFE_META_KEY);
+            if (rawMeta) {
+                const meta = JSON.parse(rawMeta);
+                if (meta && typeof meta === 'object') {
+                    if (!s.settings && meta.settings) s.settings = meta.settings;
+                    if ((!Array.isArray(s.ads) || s.ads.length === 0) && Array.isArray(meta.ads) && meta.ads.length > 0) {
+                        s.ads = meta.ads;
+                    }
+                }
+            }
+        } catch (_) {}
+    }
+
+    function pushAdminAndUserStateNow() {
+        if (!cloudDoc || isSyncingFromCloud) return;
+        const s = getSt();
+        if (!s) return;
+        restoreProtectedData(s);
+
+        try {
+            const copy = JSON.parse(JSON.stringify(s));
+            delete copy.currentUser;
+            cloudDoc.set({
+                payload: copy,
+                updatedAt: Date.now(),
+                by: (s.currentUser && s.currentUser.id) || 'admin_or_user'
+            }, { merge: true }).catch(() => {});
+        } catch (_) {}
+    }
+
+    function schedulePushNow() {
+        if (!cloudDoc || isSyncingFromCloud) return;
+        clearTimeout(pushDebounce);
+        pushDebounce = setTimeout(pushAdminAndUserStateNow, 80);
+    }
+
+    // ইউজার ডিলিট করার আসল ফাংশন (কনফার্ম ছাড়া দ্রুত ও নিশ্চিত ডিলিট)
+    window.forceDeleteUserByAdmin = function (accountId, phoneOrName) {
+        if (!isAdm()) {
+            notifyBox('শুধুমাত্র অ্যাডমিন ইউজার ডিলিট করতে পারবেন!', '🔒');
+            return false;
+        }
+        const s = getSt();
+        if (!s || !Array.isArray(s.accounts)) return false;
+
+        const targetId = String(accountId || '').trim();
+        const extraKey = String(phoneOrName || '').trim();
+
+        const idx = s.accounts.findIndex(a => {
+            if (!a) return false;
+            if (targetId && String(a.id).trim() === targetId) return true;
+            if (extraKey && (String(a.phone || '').trim() === extraKey || String(a.name || '').trim() === extraKey)) return true;
+            return false;
+        });
+
+        if (idx === -1) return false;
+        const targetAcc = s.accounts[idx];
+        if (targetAcc.role === 'admin' || targetAcc.id === 'acc_admin_1') {
+            notifyBox('মূল অ্যাডমিন অ্যাকাউন্ট ডিলিট করা যাবে না!', '⚠️');
+            return false;
+        }
+
+        if (!Array.isArray(s.deletedAccountIds)) s.deletedAccountIds = [];
+        if (!s.deletedAccountIds.includes(String(targetAcc.id))) {
+            s.deletedAccountIds.push(String(targetAcc.id));
+        }
+
+        s.accounts.splice(idx, 1);
+
+        if (Array.isArray(s.registrationRequests)) {
+            s.registrationRequests = s.registrationRequests.filter(r =>
+                r && String(r.accountId || r.id || '') !== String(targetAcc.id) &&
+                (!targetAcc.phone || String(r.phone || '') !== String(targetAcc.phone))
+            );
+        }
+
+        // স্ক্রিন থেকে ইউজারের কার্ড/রো সাথে সাথে সরানো
+        document.querySelectorAll(`[data-del-user="${CSS.escape(String(targetAcc.id))}"]`).forEach(btn => {
+            const row = btn.closest('div.rounded-xl, div.rounded-2xl, tr, li');
+            if (row) row.remove();
+        });
+
+        try {
+            if (typeof window.recordHistoryEntry === 'function') {
+                window.recordHistoryEntry({
+                    category: 'ইউজার ডিলিট',
+                    title: `অ্যাডমিন "${targetAcc.name || 'ইউজার'}" (${targetAcc.phone || ''}) অ্যাকাউন্ট ডিলিট করেছেন`,
+                    actor: 'অ্যাডমিন',
+                    amount: 0,
+                    decision: 'rejected',
+                    reason: 'অ্যাডমিন প্যানেল থেকে ইউজার মুছে ফেলা হয়েছে',
+                    userIds: [targetAcc.id]
+                });
+            }
+        } catch (_) {}
+
+        restoreProtectedData(s);
+        lockAdminUpdates(s);
+
+        try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
+        try { if (typeof window.renderAdminPanel === 'function') window.renderAdminPanel(); } catch (_) {}
+        try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+
+        pushAdminAndUserStateNow();
+        notifyBox(`"${targetAcc.name || 'ইউজার'}" ডিলিট করা হয়েছে`, '🗑️');
+        return true;
+    };
+
+    window.adminDeleteUserAccount = window.forceDeleteUserByAdmin;
+
+    // অ্যাডমিন প্যানেলে ইউজার লিস্ট ও "ইউজার মুছে ফেলুন" / "ডিলিট" বাটন নিশ্চিত করা
+    function renderProtectedAdminUsers() {
+        if (!isAdm()) return;
+        const s = getSt();
+        if (!s || !Array.isArray(s.accounts)) return;
+        restoreProtectedData(s);
+
+        const host =
+            document.getElementById('adminModalBodyContainer') ||
+            document.getElementById('adminPanelBodyContainer') ||
+            document.getElementById('inlineAdminPanelHost');
+        if (!host) return;
+
+        const prev = document.getElementById('adminProtectedUsersCard');
+        if (prev) prev.remove();
+
+        const users = s.accounts.filter(a => a && a.role !== 'admin');
+        const buyers = users.filter(a => a.role === 'buyer');
+        const sellers = users.filter(a => a.role === 'seller');
+        const riders = users.filter(a => a.role === 'rider');
+        const bn = typeof window.toBn === 'function' ? window.toBn : (x => x);
+        const fmt = typeof window.formatMoney === 'function' ? window.formatMoney : (x => `${x} ৳`);
+
+        const wrap = document.createElement('div');
+        wrap.id = 'adminProtectedUsersCard';
+        wrap.className = 'p-3.5 rounded-2xl bg-slate-800/90 border border-slate-700 space-y-2.5 text-xs mt-3';
+        wrap.innerHTML = `
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-extrabold text-amber-300 text-sm">👥 সব ইউজার (${bn(users.length)} জন)</span>
+                <div class="flex flex-wrap gap-1.5 text-[10px] font-bold">
+                    <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">ক্রেতা: ${bn(buyers.length)}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300">বিক্রেতা: ${bn(sellers.length)}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">রাইডার: ${bn(riders.length)}</span>
+                </div>
+            </div>
+            <div class="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                ${users.length ? users.map(u => {
+                    const roleBn = u.role === 'seller' ? 'বিক্রেতা' : (u.role === 'rider' ? 'রাইডার' : 'ক্রেতা');
+                    const bal = (u.wallet && typeof u.wallet.balance !== 'undefined') ? u.wallet.balance : 0;
+                    const nidTag = u.nidStatus === 'verified' ? '✅ NID' : (u.nidStatus === 'pending' ? '⏳ NID' : '—');
+                    return `
+                        <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-700 flex items-center justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="font-bold text-white truncate">${u.name || 'নামহীন'} <span class="text-[10px] text-amber-300">(${roleBn})</span> • <span class="text-[10px] text-sky-300">${nidTag}</span></div>
+                                <div class="text-[10px] text-slate-300 truncate">মোবাইল: <span class="font-mono">${u.phone || '—'}</span> • পাসওয়ার্ড: <span class="font-mono text-emerald-300">${u.password || '—'}</span> • ওয়ালেট: ${fmt(bal)}</div>
+                            </div>
+                            <button type="button" data-del-user="${u.id}" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-extrabold shrink-0">
+                                ইউজার মুছে ফেলুন
+                            </button>
+                        </div>
+                    `;
+                }).join('') : `<p class="text-slate-400">কোনো ইউজার নেই।</p>`}
+            </div>
+        `;
+        host.appendChild(wrap);
+    }
+
+    // যেকোনো "ইউজার মুছে ফেলুন" বা ইউজার ডিলিট বাটনে ক্লিক ধরার ফাংশন
+    document.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (!btn) return;
+
+        const dataId = btn.getAttribute('data-del-user');
+        const onclickStr = btn.getAttribute('onclick') || '';
+        const btnText = (btn.innerText || btn.textContent || '').trim();
+
+        const isInsideAdmin = Boolean(
+            btn.closest('#adminProtectedUsersCard, #adminModalBodyContainer, #adminPanelBodyContainer, #inlineAdminPanelHost, [id*="admin" i]')
+        );
+
+        const looksLikeUserDelete =
+            Boolean(dataId) ||
+            /deleteUser|adminDeleteUser/i.test(onclickStr) ||
+            (isInsideAdmin && (btnText.includes('ইউজার মুছে ফেলুন') || (btnText.includes('মুছে ফেলুন') && !btnText.includes('পণ্য')) || (btnText.includes('ডিলিট') && !btnText.includes('পণ্য'))));
+
+        if (!looksLikeUserDelete) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+
+        let idToDelete = dataId || '';
+        if (!idToDelete) {
+            const m = onclickStr.match(/\(\s*['"]([^'"]+)['"]\s*\)/);
+            if (m) idToDelete = m[1];
+        }
+
+        if (!idToDelete) {
+            const card = btn.closest('div.rounded-xl, div.rounded-2xl, tr, li');
+            const cardText = card ? (card.innerText || card.textContent || '') : '';
+            const phoneMatch = cardText.match(/01\d{9}/);
+            const firstLine = cardText.split('\n')[0] || '';
+            const cleanName = firstLine.replace(/\(.*?\)/g, '').replace(/[✅⏳—]/g, '').trim();
+            window.forceDeleteUserByAdmin('', (phoneMatch && phoneMatch[0]) || cleanName);
+            return;
+        }
+
+        window.forceDeleteUserByAdmin(idToDelete, '');
+    }, true);
+
+    // অ্যাডমিন প্যানেলে যেকোনো সেভ/আপডেট/অনুমোদন বাটনে ক্লিক হলে সাথে সাথে সেভ ও পুশ করা
+    document.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (!btn) return;
+        const txt = (btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('onclick') || '');
+        if (/save|update|approve|accept|verify|সেভ|আপডেট|অনুমোদন|এক্সেপ্ট|যাচাই/i.test(txt)) {
+            setTimeout(() => {
+                const s = getSt();
+                if (!s) return;
+                restoreProtectedData(s);
+                lockAdminUpdates(s);
+                try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
+                pushAdminAndUserStateNow();
+            }, 90);
+        }
+    }, true);
+
+    // loadState ও saveState হুক করে ডেটা সুরক্ষিত রাখা
+    if (typeof window.loadState === 'function') {
+        const prevLoad = window.loadState;
+        window.loadState = function () {
+            const r = prevLoad.apply(this, arguments);
+            const s = getSt();
+            if (s) restoreProtectedData(s);
+            return r;
+        };
+    }
+
+    if (typeof window.saveState === 'function') {
+        const prevSave = window.saveState;
+        window.saveState = function () {
+            const s = getSt();
+            if (s) {
+                restoreProtectedData(s);
+                lockAdminUpdates(s);
+            }
+            const r = prevSave.apply(this, arguments);
+            schedulePushNow();
+            return r;
+        };
+    }
+
+    if (typeof window.renderAdminPanel === 'function') {
+        const prevAdminRender = window.renderAdminPanel;
+        window.renderAdminPanel = function () {
+            const s = getSt();
+            if (s) restoreProtectedData(s);
+            const r = prevAdminRender.apply(this, arguments);
+            renderProtectedAdminUsers();
+            return r;
+        };
+    }
+
+    if (cloudDoc) {
+        cloudDoc.onSnapshot(snap => {
+            if (!snap.exists || isSyncingFromCloud) return;
+            const s = getSt();
+            if (!s) return;
+            const doc = snap.data() || {};
+            const remote = doc.payload;
+            if (!remote || typeof remote !== 'object') return;
+
+            isSyncingFromCloud = true;
+            try {
+                const keepUser = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
+                Object.keys(remote).forEach(k => {
+                    if (k !== 'currentUser') s[k] = remote[k];
+                });
+                s.currentUser = keepUser;
+                restoreProtectedData(s);
+                try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+                try { if (typeof window.renderAdminPanel === 'function' && isAdm()) window.renderAdminPanel(); } catch (_) {}
+            } finally {
+                setTimeout(() => { isSyncingFromCloud = false; }, 100);
+            }
+        });
+    }
+
+    setTimeout(() => {
+        const s = getSt();
+        if (s) {
+            restoreProtectedData(s);
+            renderProtectedAdminUsers();
+        }
+    }, 300);
+})();
+</script>
 
 
 </body>
