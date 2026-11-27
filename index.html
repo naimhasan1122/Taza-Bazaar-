@@ -8977,6 +8977,653 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    const MASTER_DOC = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
+        ? firebase.firestore().collection('ebazar_realtime_master').doc('taza_bazar_live_v4')
+        : null;
+
+    const LS_STATE = 'taza_bazar_master_state_v4';
+    const LS_HIST = 'taza_bazar_master_history_v4';
+    const LS_DEL_P = 'taza_bazar_master_del_prod_v4';
+    const LS_DEL_U = 'taza_bazar_master_del_user_v4';
+
+    let applyingRemote = false;
+    let pushTimer = null;
+    let lastHash = '';
+    let firstSnap = true;
+    let audioCtx = null;
+
+    const seenRegs = new Set();
+    const seenNids = new Set();
+    const seenNotifs = new Set();
+
+    function st() {
+        if (typeof state !== 'undefined' && state && typeof state === 'object') {
+            window.state = state;
+            return state;
+        }
+        return (window.state && typeof window.state === 'object') ? window.state : null;
+    }
+
+    function isAdm() {
+        try {
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
+        } catch (_) {}
+        const s = st();
+        const u = s && s.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
+    }
+
+    function canManageProduct(prod, u) {
+        if (!prod || !u) return false;
+        if (isAdm()) return true;
+        if (prod.sellerId && u.id && String(prod.sellerId) === String(u.id)) return true;
+        if (prod.sellerPhone && u.phone && String(prod.sellerPhone).replace(/\D/g, '') === String(u.phone).replace(/\D/g, '')) return true;
+        if (u.role === 'seller' && prod.sellerName && u.name && String(prod.sellerName).trim() === String(u.name).trim()) return true;
+        return false;
+    }
+
+    function playTungSound() {
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return;
+            if (!audioCtx) audioCtx = new Ctx();
+            if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(900, now);
+            osc.frequency.exponentialRampToValueAtTime(1350, now + 0.08);
+            osc.frequency.exponentialRampToValueAtTime(675, now + 0.22);
+            gain.gain.setValueAtTime(0.001, now);
+            gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now);
+            osc.stop(now + 0.26);
+        } catch (_) {}
+    }
+
+    ['pointerdown', 'keydown', 'touchstart'].forEach(ev => {
+        document.addEventListener(ev, function () {
+            try {
+                const Ctx = window.AudioContext || window.webkitAudioContext;
+                if (Ctx && !audioCtx) audioCtx = new Ctx();
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+            } catch (_) {}
+        }, { passive: true });
+    });
+
+    function alertUser(title, body, withSound) {
+        if (withSound) playTungSound();
+        if (typeof window.triggerMobileFrontNotification === 'function') {
+            window.triggerMobileFrontNotification(title, body, 'alert');
+        } else if (typeof window.showToast === 'function') {
+            window.showToast(`${title}: ${body}`, '🔔');
+        }
+    }
+
+    function isDemoItem(item) {
+        if (!item) return false;
+        const txt = `${item.id || ''} ${item.name || ''} ${item.title || ''} ${item.ownerName || ''} ${item.actor || ''}`.toLowerCase();
+        return Boolean(item.isDemo || txt.includes('demo_seed') || txt.includes('ডেমো'));
+    }
+
+    function mergeHistorySafe(arrA, arrB) {
+        const map = new Map();
+        (Array.isArray(arrA) ? arrA : []).concat(Array.isArray(arrB) ? arrB : []).forEach((h, i) => {
+            if (!h || typeof h !== 'object') return;
+            const k = h.id ? String(h.id) : `${h.category || ''}|${h.title || ''}|${h.actor || ''}|${h.timestamp || i}`;
+            const prev = map.get(k);
+            map.set(k, prev ? Object.assign({}, prev, h) : JSON.parse(JSON.stringify(h)));
+        });
+        return Array.from(map.values());
+    }
+
+    // সব স্থায়ী ডেটা ও টম্বস্টোন একসাথে সংরক্ষণ এবং পুরনো/ডিলিট ডেটা ছেঁটে ফেলা
+    function enforceDurability(s) {
+        if (!s) return;
+        try {
+            const savedDelP = JSON.parse(localStorage.getItem(LS_DEL_P) || '[]');
+            const savedDelU = JSON.parse(localStorage.getItem(LS_DEL_U) || '[]');
+            const savedHist = JSON.parse(localStorage.getItem(LS_HIST) || '[]');
+
+            const delP = new Set([...(Array.isArray(s.deletedProductIds) ? s.deletedProductIds : []), ...(Array.isArray(savedDelP) ? savedDelP : [])].map(String).filter(Boolean));
+            const delU = new Set([...(Array.isArray(s.deletedAccountIds) ? s.deletedAccountIds : []), ...(Array.isArray(savedDelU) ? savedDelU : [])].map(String).filter(Boolean));
+
+            s.deletedProductIds = Array.from(delP);
+            s.deletedAccountIds = Array.from(delU);
+
+            if (Array.isArray(s.products)) {
+                s.products = s.products.filter(p => p && !delP.has(String(p.id)));
+            }
+            if (Array.isArray(s.cart)) {
+                s.cart = s.cart.filter(c => c && !delP.has(String(c.productId)));
+            }
+            if (Array.isArray(s.accounts)) {
+                s.accounts = s.accounts.filter(a => a && !delU.has(String(a.id)));
+            }
+            if (Array.isArray(s.registrationRequests)) {
+                s.registrationRequests = s.registrationRequests.filter(r => r && !isDemoItem(r) && !delU.has(String(r.accountId || r.id || '')));
+            }
+            if (Array.isArray(s.ads)) {
+                s.ads = s.ads.filter(a => a && !isDemoItem(a));
+            }
+
+            s.history = mergeHistorySafe(savedHist, s.history);
+
+            localStorage.setItem(LS_DEL_P, JSON.stringify(s.deletedProductIds));
+            localStorage.setItem(LS_DEL_U, JSON.stringify(s.deletedAccountIds));
+            localStorage.setItem(LS_HIST, JSON.stringify(s.history));
+
+            const backup = Object.assign({}, s);
+            delete backup.currentUser;
+            localStorage.setItem(LS_STATE, JSON.stringify(backup));
+        } catch (_) {}
+    }
+
+    // পেজ লোডে বা অ্যাপ আপডেটে ব্যাকআপ থেকে স্টেট পুনরুদ্ধার করা
+    function restoreFromBackupIfNeeded(s) {
+        if (!s) return;
+        try {
+            const raw = localStorage.getItem(LS_STATE);
+            if (!raw) return;
+            const b = JSON.parse(raw);
+            if (!b || typeof b !== 'object') return;
+
+            if ((!Array.isArray(s.accounts) || s.accounts.length === 0) && Array.isArray(b.accounts) && b.accounts.length) {
+                s.accounts = b.accounts;
+            }
+            if ((!Array.isArray(s.products) || s.products.length === 0) && Array.isArray(b.products) && b.products.length) {
+                s.products = b.products;
+            }
+            if ((!Array.isArray(s.orders) || s.orders.length === 0) && Array.isArray(b.orders) && b.orders.length) {
+                s.orders = b.orders;
+            }
+            if ((!Array.isArray(s.ads) || s.ads.length === 0) && Array.isArray(b.ads) && b.ads.length) {
+                s.ads = b.ads;
+            }
+            if (!s.settings && b.settings) {
+                s.settings = b.settings;
+            }
+            if (s.currentUser && Array.isArray(s.accounts)) {
+                const me = s.accounts.find(a => a && ((s.currentUser.id && a.id === s.currentUser.id) || (s.currentUser.phone && a.phone === s.currentUser.phone)));
+                if (me) s.currentUser = Object.assign({}, s.currentUser, me);
+            }
+        } catch (_) {}
+    }
+
+    function removeCardFromDom(productId) {
+        const pid = String(productId || '').trim();
+        if (!pid) return;
+        ['productsGrid', 'sellerMyProductsList'].forEach(boxId => {
+            const box = document.getElementById(boxId);
+            if (!box) return;
+            Array.from(box.children).forEach(child => {
+                if ((child.outerHTML || '').includes(pid)) child.remove();
+            });
+        });
+    }
+
+    function renderSellerList() {
+        const s = st();
+        const u = s && s.currentUser;
+        const listEl = document.getElementById('sellerMyProductsList');
+        if (!s || !u || !listEl || !Array.isArray(s.products)) return;
+
+        const delSet = new Set((s.deletedProductIds || []).map(String));
+        const mine = s.products.filter(p => p && !delSet.has(String(p.id)) && canManageProduct(p, u));
+        const bn = typeof window.toBn === 'function' ? window.toBn : (x => x);
+        const fmt = typeof window.formatMoney === 'function' ? window.formatMoney : (x => `${x} ৳`);
+
+        if (!mine.length) {
+            listEl.innerHTML = `<p class="text-xs text-slate-400">আপনার কোনো পণ্য নেই।</p>`;
+            return;
+        }
+
+        listEl.innerHTML = mine.map(p => {
+            const isOff = Boolean(p.hiddenBySeller);
+            return `
+                <div class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        <img src="${p.img || ''}" class="w-11 h-11 rounded-lg object-cover shrink-0 bg-slate-200">
+                        <div class="min-w-0">
+                            <div class="font-bold text-slate-800 truncate">${p.name}</div>
+                            <div class="text-[11px] text-slate-500">${fmt(p.price)}/${p.unit || 'কেজি'} • স্টক: ${bn(p.stock)} • বিক্রেতা: ${p.sellerName || ''}</div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        <span class="px-2 py-0.5 rounded-full font-bold text-[10px] ${isOff ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800'}">${isOff ? 'অফ আছে' : 'লাইভ'}</span>
+                        <button type="button" data-master-toggle="${p.id}" class="px-2.5 py-1 rounded-lg font-extrabold text-[10px] ${isOff ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-amber-500 hover:bg-amber-600 text-slate-950'}">${isOff ? '🟢 অন করুন' : '⏸️ অফ করুন'}</button>
+                        <button type="button" data-master-del="${p.id}" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-[10px]">🗑️ ডিলিট</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function pruneMarketGrid() {
+        const s = st();
+        const grid = document.getElementById('productsGrid');
+        if (!s || !grid) return;
+        const u = s.currentUser;
+        const delSet = new Set((s.deletedProductIds || []).map(String));
+        const offForOthers = new Set((s.products || []).filter(p => p && p.hiddenBySeller && !canManageProduct(p, u)).map(p => String(p.id)));
+
+        Array.from(grid.children).forEach(card => {
+            const h = card.outerHTML || '';
+            for (const id of delSet) { if (id && h.includes(id)) { card.remove(); return; } }
+            for (const id of offForOthers) { if (id && h.includes(id)) { card.remove(); return; } }
+        });
+    }
+
+    function pushCloudNow() {
+        if (!MASTER_DOC || applyingRemote) return;
+        const s = st();
+        if (!s) return;
+        enforceDurability(s);
+        try {
+            const payload = JSON.parse(JSON.stringify(s));
+            delete payload.currentUser;
+            const sig = JSON.stringify({
+                accounts: payload.accounts,
+                registrationRequests: payload.registrationRequests,
+                nidRequests: payload.nidRequests,
+                products: payload.products,
+                deletedProductIds: payload.deletedProductIds,
+                deletedAccountIds: payload.deletedAccountIds,
+                orders: payload.orders,
+                notifications: payload.notifications,
+                ads: payload.ads,
+                packageRequests: payload.packageRequests,
+                withdrawalRequests: payload.withdrawalRequests,
+                riderDeposits: payload.riderDeposits,
+                settings: payload.settings
+            });
+            if (sig === lastHash) return;
+            lastHash = sig;
+            MASTER_DOC.set({
+                payload: payload,
+                updatedAt: Date.now(),
+                by: (s.currentUser && s.currentUser.id) || 'app'
+            }).catch(() => {});
+        } catch (_) {}
+    }
+
+    function schedulePush() {
+        if (!MASTER_DOC || applyingRemote) return;
+        clearTimeout(pushTimer);
+        pushTimer = setTimeout(pushCloudNow, 80);
+    }
+
+    function saveRefreshAndPush() {
+        const s = st();
+        if (!s) return;
+        enforceDurability(s);
+        try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
+        try { if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid(); } catch (_) {}
+        renderSellerList();
+        pruneMarketGrid();
+        schedulePush();
+    }
+
+    // পণ্য ডিলিট (শুধু মালিক বা অ্যাডমিন)
+    window.deleteSellerProduct = function (productId) {
+        const s = st();
+        if (!s || !Array.isArray(s.products)) return false;
+        const pid = String(productId || '').trim();
+        const idx = s.products.findIndex(p => p && String(p.id).trim() === pid);
+        if (idx === -1) return false;
+
+        const prod = s.products[idx];
+        const u = s.currentUser;
+        if (!canManageProduct(prod, u)) {
+            alertUser('অনুমতি নেই', 'শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন ডিলিট করতে পারবেন!', false);
+            return false;
+        }
+
+        s.deletedProductIds = Array.isArray(s.deletedProductIds) ? s.deletedProductIds : [];
+        if (!s.deletedProductIds.includes(prod.id)) s.deletedProductIds.push(prod.id);
+        s.products.splice(idx, 1);
+        if (Array.isArray(s.cart)) s.cart = s.cart.filter(c => c && String(c.productId).trim() !== pid);
+        removeCardFromDom(pid);
+
+        try {
+            if (typeof window.recordHistoryEntry === 'function') {
+                window.recordHistoryEntry({
+                    category: 'পণ্য ডিলিট',
+                    title: `${(u && u.name) || 'বিক্রেতা'} "${prod.name}" পণ্যটি ডিলিট করেছেন`,
+                    actor: (u && u.name) || 'বিক্রেতা',
+                    amount: Number(prod.price || 0),
+                    decision: 'rejected',
+                    reason: 'মালিক বা অ্যাডমিন কর্তৃক ডিলিট',
+                    userIds: [prod.sellerId, u && u.id].filter(Boolean)
+                });
+            }
+        } catch (_) {}
+
+        saveRefreshAndPush();
+        alertUser('পণ্য ডিলিট হয়েছে', `"${prod.name}" মুছে ফেলা হয়েছে।`, false);
+        return true;
+    };
+
+    // পণ্য অফ/অন (শুধু মালিক বা অ্যাডমিন)
+    window.toggleProductVisibility = function (productId) {
+        const s = st();
+        if (!s || !Array.isArray(s.products)) return false;
+        const pid = String(productId || '').trim();
+        const prod = s.products.find(p => p && String(p.id).trim() === pid);
+        if (!prod) return false;
+
+        const u = s.currentUser;
+        if (!canManageProduct(prod, u)) {
+            alertUser('অনুমতি নেই', 'শুধুমাত্র এই পণ্যের বিক্রেতা বা অ্যাডমিন অফ/অন করতে পারবেন!', false);
+            return false;
+        }
+
+        prod.hiddenBySeller = !Boolean(prod.hiddenBySeller);
+        saveRefreshAndPush();
+        alertUser(
+            prod.hiddenBySeller ? 'পণ্য অফ করা হয়েছে' : 'পণ্য অন করা হয়েছে',
+            prod.hiddenBySeller ? `"${prod.name}" ই-বাজারে লুকানো আছে।` : `"${prod.name}" ই-বাজারে লাইভ আছে।`,
+            false
+        );
+        return true;
+    };
+
+    // অ্যাডমিনের ইউজার ডিলিট
+    window.adminDeleteUserAccount = function (accountId) {
+        if (!isAdm()) {
+            alertUser('অনুমতি নেই', 'শুধুমাত্র অ্যাডমিন ইউজার ডিলিট করতে পারবেন!', false);
+            return false;
+        }
+        const s = st();
+        if (!s || !Array.isArray(s.accounts)) return false;
+        const targetId = String(accountId || '').trim();
+        const idx = s.accounts.findIndex(a => a && String(a.id).trim() === targetId);
+        if (idx === -1) return false;
+
+        const acc = s.accounts[idx];
+        if (acc.role === 'admin' || acc.id === 'acc_admin_1') {
+            alertUser('বাধা', 'মূল অ্যাডমিন অ্যাকাউন্ট ডিলিট করা যাবে না!', false);
+            return false;
+        }
+
+        s.deletedAccountIds = Array.isArray(s.deletedAccountIds) ? s.deletedAccountIds : [];
+        if (!s.deletedAccountIds.includes(acc.id)) s.deletedAccountIds.push(acc.id);
+        s.accounts.splice(idx, 1);
+        if (Array.isArray(s.registrationRequests)) {
+            s.registrationRequests = s.registrationRequests.filter(r => r && String(r.accountId || r.id || '') !== targetId);
+        }
+
+        try {
+            if (typeof window.recordHistoryEntry === 'function') {
+                window.recordHistoryEntry({
+                    category: 'ইউজার ডিলিট',
+                    title: `অ্যাডমিন "${acc.name || 'ইউজার'}" (${acc.phone || ''}) অ্যাকাউন্ট ডিলিট করেছেন`,
+                    actor: 'অ্যাডমিন',
+                    amount: 0,
+                    decision: 'rejected',
+                    reason: 'অ্যাডমিন কর্তৃক ইউজার ডিলিট',
+                    userIds: [acc.id]
+                });
+            }
+        } catch (_) {}
+
+        saveRefreshAndPush();
+        try { if (typeof window.renderAdminPanel === 'function') window.renderAdminPanel(); } catch (_) {}
+        alertUser('ইউজার ডিলিট হয়েছে', `"${acc.name || 'ইউজার'}" মুছে ফেলা হয়েছে।`, false);
+        return true;
+    };
+
+    // অ্যাডমিন প্যানেলে সব ইউজারের তথ্য (নাম, রোল, মোবাইল, পাসওয়ার্ড, ওয়ালেট) ও ডিলিট বাটন
+    function renderAdminUsersList() {
+        if (!isAdm()) return;
+        const s = st();
+        if (!s || !Array.isArray(s.accounts)) return;
+        const host =
+            document.getElementById('adminModalBodyContainer') ||
+            document.getElementById('adminPanelBodyContainer') ||
+            document.getElementById('inlineAdminPanelHost');
+        if (!host) return;
+
+        const old = document.getElementById('masterAdminUsersBox');
+        if (old) old.remove();
+
+        const users = s.accounts.filter(a => a && a.role !== 'admin');
+        const buyers = users.filter(a => a.role === 'buyer');
+        const sellers = users.filter(a => a.role === 'seller');
+        const riders = users.filter(a => a.role === 'rider');
+        const bn = typeof window.toBn === 'function' ? window.toBn : (x => x);
+        const fmt = typeof window.formatMoney === 'function' ? window.formatMoney : (x => `${x} ৳`);
+
+        const box = document.createElement('div');
+        box.id = 'masterAdminUsersBox';
+        box.className = 'p-3.5 rounded-2xl bg-slate-800/90 border border-slate-700 space-y-2.5 text-xs mt-3';
+        box.innerHTML = `
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-extrabold text-amber-300 text-sm">👥 সব ইউজার (${bn(users.length)} জন)</span>
+                <div class="flex flex-wrap gap-1.5 text-[10px] font-bold">
+                    <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">ক্রেতা: ${bn(buyers.length)}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300">বিক্রেতা: ${bn(sellers.length)}</span>
+                    <span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">রাইডার: ${bn(riders.length)}</span>
+                </div>
+            </div>
+            <div class="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                ${users.length ? users.map(u => {
+                    const roleBn = u.role === 'seller' ? 'বিক্রেতা' : (u.role === 'rider' ? 'রাইডার' : 'ক্রেতা');
+                    const bal = (u.wallet && typeof u.wallet.balance !== 'undefined') ? u.wallet.balance : 0;
+                    const nidTag = u.nidStatus === 'verified' ? '✅ NID' : (u.nidStatus === 'pending' ? '⏳ NID' : '—');
+                    return `
+                        <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-700 flex items-center justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="font-bold text-white truncate">${u.name || 'নামহীন'} <span class="text-[10px] text-amber-300">(${roleBn})</span> • <span class="text-[10px] text-sky-300">${nidTag}</span></div>
+                                <div class="text-[10px] text-slate-300 truncate">মোবাইল: <span class="font-mono">${u.phone || '—'}</span> • পাসওয়ার্ড: <span class="font-mono text-emerald-300">${u.password || '—'}</span> • ওয়ালেট: ${fmt(bal)}</div>
+                            </div>
+                            <button type="button" data-master-del-user="${u.id}" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-extrabold shrink-0">ডিলিট</button>
+                        </div>
+                    `;
+                }).join('') : `<p class="text-slate-400">কোনো ইউজার নেই।</p>`}
+            </div>
+        `;
+        host.appendChild(box);
+    }
+
+    // নতুন আবেদন, এনআইডি বা নোটিফিকেশন এলে যার কাছে যাওয়ার তার কাছে টুং সাউন্ডসহ অ্যালার্ট
+    function checkRealtimeAlerts(s, isInitial) {
+        if (!s) return;
+        const amAdmin = isAdm();
+        const me = s.currentUser;
+
+        (s.registrationRequests || []).forEach((r, idx) => {
+            if (!r || isDemoItem(r)) return;
+            const id = String(r.id || r.phone || `r_${idx}`);
+            if (!seenRegs.has(id)) {
+                seenRegs.add(id);
+                if (!isInitial && amAdmin) {
+                    alertUser('নতুন আইডি আবেদন', `${r.name || 'ইউজার'} (${r.role || 'user'}) আইডি খোলার আবেদন করেছেন।`, true);
+                }
+            }
+        });
+
+        (s.nidRequests || []).forEach((n, idx) => {
+            if (!n) return;
+            const id = String(n.id || n.userId || n.phone || `n_${idx}`);
+            if (!seenNids.has(id)) {
+                seenNids.add(id);
+                if (!isInitial && amAdmin) {
+                    alertUser('নতুন এনআইডি জমা', `${n.name || 'ইউজার'} এনআইডি যাচাইয়ের জন্য পাঠিয়েছেন।`, true);
+                }
+            }
+        });
+
+        (s.notifications || []).slice(0, 20).forEach((nf, idx) => {
+            if (!nf) return;
+            const id = String(nf.id || `${nf.title || ''}_${nf.message || nf.body || ''}_${nf.time || idx}`);
+            if (!seenNotifs.has(id)) {
+                seenNotifs.add(id);
+                if (!isInitial && me) {
+                    const mine =
+                        (amAdmin && (nf.forAdmin || nf.targetRole === 'admin' || nf.adminOnly)) ||
+                        (Array.isArray(nf.userIds) && nf.userIds.includes(me.id)) ||
+                        (nf.targetUserId && nf.targetUserId === me.id) ||
+                        (nf.userId && nf.userId === me.id) ||
+                        (nf.toUserId && nf.toUserId === me.id);
+                    if (mine) {
+                        alertUser(nf.title || 'নতুন আপডেট', nf.message || nf.body || nf.text || 'নতুন নোটিফিকেশন এসেছে।', true);
+                    }
+                }
+            }
+        });
+    }
+
+    // ক্লিক ও সাবমিট হুক
+    document.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (!btn) return;
+
+        const pDel = btn.getAttribute('data-master-del');
+        const pTog = btn.getAttribute('data-master-toggle');
+        const uDel = btn.getAttribute('data-master-del-user');
+
+        if (pDel) {
+            e.preventDefault(); e.stopPropagation();
+            if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+            window.deleteSellerProduct(pDel);
+            return;
+        }
+        if (pTog) {
+            e.preventDefault(); e.stopPropagation();
+            if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+            window.toggleProductVisibility(pTog);
+            return;
+        }
+        if (uDel) {
+            e.preventDefault(); e.stopPropagation();
+            if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+            window.adminDeleteUserAccount(uDel);
+            return;
+        }
+
+        const txt = (btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('onclick') || '');
+        if (/save|update|approve|accept|verify|submit|আবেদন|জমা|সেভ|আপডেট|অনুমোদন|এক্সেপ্ট|যাচাই/i.test(txt)) {
+            setTimeout(() => {
+                saveRefreshAndPush();
+                checkRealtimeAlerts(st(), false);
+            }, 90);
+        }
+    }, true);
+
+    document.addEventListener('submit', function () {
+        setTimeout(() => {
+            saveRefreshAndPush();
+            checkRealtimeAlerts(st(), false);
+        }, 120);
+    }, true);
+
+    // loadState ও saveState হুক
+    if (typeof window.loadState === 'function') {
+        const origL = window.loadState;
+        window.loadState = function () {
+            const r = origL.apply(this, arguments);
+            const s = st();
+            if (s) {
+                restoreFromBackupIfNeeded(s);
+                enforceDurability(s);
+            }
+            return r;
+        };
+    }
+
+    if (typeof window.saveState === 'function') {
+        const origS = window.saveState;
+        window.saveState = function () {
+            const s = st();
+            if (s) enforceDurability(s);
+            const r = origS.apply(this, arguments);
+            schedulePush();
+            return r;
+        };
+    }
+
+    if (typeof window.renderAdminPanel === 'function') {
+        const origA = window.renderAdminPanel;
+        window.renderAdminPanel = function () {
+            const s = st();
+            if (s) enforceDurability(s);
+            const r = origA.apply(this, arguments);
+            renderAdminUsersList();
+            return r;
+        };
+    }
+
+    if (typeof window.renderAddProductTab === 'function') {
+        const origP = window.renderAddProductTab;
+        window.renderAddProductTab = function () {
+            const r = origP.apply(this, arguments);
+            renderSellerList();
+            return r;
+        };
+    }
+
+    if (typeof window.renderProductsGrid === 'function') {
+        const origG = window.renderProductsGrid;
+        window.renderProductsGrid = function () {
+            const r = origG.apply(this, arguments);
+            pruneMarketGrid();
+            return r;
+        };
+    }
+
+    if (MASTER_DOC) {
+        MASTER_DOC.onSnapshot(snap => {
+            if (!snap.exists || applyingRemote) return;
+            const s = st();
+            if (!s) return;
+            const doc = snap.data() || {};
+            const remote = doc.payload;
+            if (!remote || typeof remote !== 'object') return;
+
+            applyingRemote = true;
+            try {
+                const keepMe = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
+                Object.keys(remote).forEach(k => {
+                    if (k !== 'currentUser') s[k] = remote[k];
+                });
+                s.currentUser = keepMe;
+                enforceDurability(s);
+
+                try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+                try { if (typeof window.renderAdminPanel === 'function' && isAdm()) window.renderAdminPanel(); } catch (_) {}
+                renderSellerList();
+                pruneMarketGrid();
+                checkRealtimeAlerts(s, firstSnap);
+                firstSnap = false;
+            } finally {
+                setTimeout(() => { applyingRemote = false; }, 90);
+            }
+        });
+    }
+
+    setTimeout(() => {
+        const s = st();
+        if (!s) return;
+        restoreFromBackupIfNeeded(s);
+        enforceDurability(s);
+        renderSellerList();
+        pruneMarketGrid();
+        checkRealtimeAlerts(s, true);
+        if (MASTER_DOC) {
+            MASTER_DOC.get().then(snap => {
+                if (!snap.exists) pushCloudNow();
+            }).catch(() => {});
+        }
+    }, 350);
+})();
+</script>
 
 
 </body>
