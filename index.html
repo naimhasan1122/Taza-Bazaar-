@@ -9627,23 +9627,22 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const LIVE_COL = 'ebazar_live_sync_room';
-    const LIVE_DOC = 'main_live_state';
-    const LOCAL_SNAPSHOT_KEY = 'ebazar_live_latest_state_v5';
+    const LIVE_COL = 'ebazar_live_app';
+    const LIVE_DOC = 'live_state_doc';
+    const STORAGE_KEY = 'taza_bazar_live_backup_v6';
 
-    let isRemoteApplying = false;
-    let pushTimeout = null;
-    let lastLocalMutationAt = 0;
-    let lastRemoteUpdatedAt = 0;
-    let initialLoadDone = false;
+    let syncingFromCloud = false;
+    let pushTimer = null;
+    let lastSentTime = 0;
+    let lastRecvTime = 0;
+    let bootDone = false;
     let audioCtx = null;
 
-    const seenNotifs = new Set();
-    const seenRegs = new Set();
-    const seenNids = new Set();
-    const seenOrders = new Set();
+    const seenNotifIds = new Set();
+    const seenRegIds = new Set();
+    const seenOrderKeys = new Set();
 
-    function getAppState() {
+    function getStateRef() {
         if (typeof state !== 'undefined' && state && typeof state === 'object') {
             window.state = state;
             return state;
@@ -9651,7 +9650,7 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return (window.state && typeof window.state === 'object') ? window.state : null;
     }
 
-    function getDocRef() {
+    function getDbDoc() {
         try {
             if (window.firebase && window.firebase.apps && window.firebase.apps.length && typeof window.firebase.firestore === 'function') {
                 return window.firebase.firestore().collection(LIVE_COL).doc(LIVE_DOC);
@@ -9660,26 +9659,366 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return null;
     }
 
-    function hasAdminAccess() {
+    function isAdminSession() {
         try {
             if (typeof isAdminActive === 'function' && isAdminActive()) return true;
         } catch (_) {}
-        const st = getAppState();
-        const u = st && st.currentUser;
-        return Boolean(st && st.adminUnlocked === true && u && (u.role === 'admin' || u.isAdmin === true));
+        const s = getStateRef();
+        const u = s && s.currentUser;
+        return Boolean(s && s.adminUnlocked === true && u && (u.role === 'admin' || u.isAdmin === true));
     }
 
     function playTung() {
         try {
-            const AC = window.AudioContext || window.webkitAudioContext;
-            if (!AC) return;
-            if (!audioCtx) audioCtx = new AC();
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (!AudioCtx) return;
+            if (!audioCtx) audioCtx = new AudioCtx();
             if (audioCtx.state === 'suspended') {
                 audioCtx.resume().catch(function () {});
             }
-            const t = audioCtx.currentTime;
+            const now = audioCtx.currentTime;
             const osc = audioCtx.createOscillator();
             const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(920, now);
+            osc.frequency.exponentialRampToValueAtTime(1380, now + 0.08);
+            osc.frequency.exponentialRampToValueAtTime(680, now + 0.22);
+
+            gain.gain.setValueAtTime(0.001, now);
+            gain.gain.exponentialRampToValueAtTime(0.22, now + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now);
+            osc.stop(now + 0.27);
+        } catch (_) {}
+    }
+
+    ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
+        document.addEventListener(ev, function () {
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (AudioCtx && !audioCtx) audioCtx = new AudioCtx();
+                if (audioCtx && audioCtx.state === 'suspended') {
+                    audioCtx.resume().catch(function () {});
+                }
+            } catch (_) {}
+        }, { passive: true });
+    });
+
+    function showLiveAlert(title, msg, withSound) {
+        if (withSound) playTung();
+        if (typeof window.triggerMobileFrontNotification === 'function') {
+            window.triggerMobileFrontNotification(title, msg, 'alert');
+        } else if (typeof window.showToast === 'function') {
+            window.showToast(title + ': ' + msg, '🔔');
+        }
+    }
+
+    function saveLocalBackup(s) {
+        if (!s) return;
+        try {
+            const copy = JSON.parse(JSON.stringify(s));
+            delete copy.currentUser;
+            delete copy.adminUnlocked;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(copy));
+        } catch (_) {}
+    }
+
+    function checkNotifications(s, isFirst) {
+        if (!s) return;
+        const amAdmin = isAdminSession();
+        const me = s.currentUser || null;
+
+        (Array.isArray(s.registrationRequests) ? s.registrationRequests : []).forEach(function (r, idx) {
+            if (!r || r.status !== 'pending') return;
+            const id = String(r.id || r.phone || ('reg_' + idx));
+            if (!seenRegIds.has(id)) {
+                seenRegIds.add(id);
+                if (!isFirst && amAdmin) {
+                    showLiveAlert(
+                        'নতুন অ্যাকাউন্ট আবেদন',
+                        (r.name || 'ব্যবহারকারী') + ' (' + (r.phone || '') + ') আবেদন করেছেন।',
+                        true
+                    );
+                }
+            }
+        });
+
+        (Array.isArray(s.orders) ? s.orders : []).forEach(function (o, idx) {
+            if (!o) return;
+            const key = String(o.id || ('ord_' + idx)) + ':' + String(o.status || '');
+            if (!seenOrderKeys.has(key)) {
+                seenOrderKeys.add(key);
+                if (!isFirst && me) {
+                    const involved =
+                        (o.buyerId && me.id === o.buyerId) ||
+                        (o.targetSellerId && me.id === o.targetSellerId) ||
+                        (Array.isArray(o.sellerIds) && o.sellerIds.includes(me.id)) ||
+                        (o.riderId && me.id === o.riderId) ||
+                        (me.role === 'rider' && (o.status === 'all_sellers_confirmed' || o.status === 'ready_for_rider'));
+                    if (involved) {
+                        showLiveAlert('অর্ডার আপডেট (' + (o.id || '') + ')', 'স্ট্যাটাস: ' + (o.status || 'আপডেট হয়েছে'), true);
+                    }
+                }
+            }
+        });
+
+        (Array.isArray(s.notifications) ? s.notifications : []).slice(0, 25).forEach(function (n, idx) {
+            if (!n || typeof n !== 'object') return;
+            const id = String(n.id || [n.title || '', n.message || n.body || '', n.time || idx].join('|'));
+            if (seenNotifIds.has(id)) return;
+
+            const adminOnly = Boolean(n.forAdmin || n.targetRole === 'admin' || n.adminOnly);
+            const uids = Array.isArray(n.userIds) ? n.userIds : [];
+            const target = n.targetUserId || n.userId || n.toUserId || null;
+
+            let mine = false;
+            if (adminOnly) {
+                mine = amAdmin;
+            } else if (me) {
+                if (uids.length > 0) mine = uids.includes(me.id);
+                else if (target) mine = target === me.id;
+                else if (n.targetRole) mine = me.role === n.targetRole;
+            }
+
+            if (mine) {
+                seenNotifIds.add(id);
+                showLiveAlert(
+                    n.title || 'নতুন লাইভ নোটিফিকেশন',
+                    n.message || n.body || n.text || 'নতুন আপডেট এসেছে।',
+                    true
+                );
+            }
+        });
+    }
+
+    function pushNowToCloud() {
+        const doc = getDbDoc();
+        const s = getStateRef();
+        if (!doc || !s || syncingFromCloud) return;
+
+        saveLocalBackup(s);
+        const ts = Date.now();
+        lastSentTime = ts;
+        lastRecvTime = ts;
+
+        try {
+            const payload = JSON.parse(JSON.stringify(s));
+            delete payload.currentUser;
+            delete payload.adminUnlocked;
+
+            doc.set({
+                payload: payload,
+                updatedAt: ts,
+                by: (s.currentUser && s.currentUser.id) || 'user'
+            }).catch(function (err) {
+                console.warn('Firestore set error:', err);
+            });
+        } catch (err) {
+            console.warn('JSON stringify error:', err);
+        }
+    }
+
+    function queuePush() {
+        if (syncingFromCloud) return;
+        clearTimeout(pushTimer);
+        pushTimer = setTimeout(pushNowToCloud, 60);
+    }
+
+    function applyRemoteData(remote, ts) {
+        const s = getStateRef();
+        if (!s || !remote || typeof remote !== 'object') return;
+
+        syncingFromCloud = true;
+        try {
+            const keepUser = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
+            const keepAdmin = Boolean(s.adminUnlocked);
+
+            Object.keys(remote).forEach(function (k) {
+                if (k !== 'currentUser' && k !== 'adminUnlocked') {
+                    s[k] = remote[k];
+                }
+            });
+
+            if (keepUser && Array.isArray(s.accounts)) {
+                const fresh = s.accounts.find(function (a) {
+                    return a && ((keepUser.id && a.id === keepUser.id) || (keepUser.phone && a.phone === keepUser.phone));
+                });
+                if (fresh) {
+                    const merged = Object.assign({}, keepUser, {
+                        approved: fresh.approved,
+                        nidStatus: fresh.nidStatus,
+                        nidNumber: fresh.nidNumber,
+                        nidImg: fresh.nidImg,
+                        package: fresh.package,
+                        wallet: fresh.wallet,
+                        lastWithdrawAt: fresh.lastWithdrawAt
+                    });
+                    if (keepUser.role !== 'admin') merged.role = keepUser.role;
+                    s.currentUser = merged;
+                } else {
+                    s.currentUser = keepUser;
+                }
+            } else {
+                s.currentUser = keepUser;
+            }
+
+            s.adminUnlocked = keepAdmin;
+            if (ts) lastRecvTime = ts;
+            saveLocalBackup(s);
+
+            try {
+                if (typeof window.syncAllUI === 'function') window.syncAllUI();
+            } catch (_) {}
+
+            try {
+                if (isAdminSession() && typeof window.renderAdminPanel === 'function') {
+                    window.renderAdminPanel();
+                }
+            } catch (_) {}
+
+            checkNotifications(s, !bootDone);
+            bootDone = true;
+        } finally {
+            setTimeout(function () {
+                syncingFromCloud = false;
+            }, 90);
+        }
+    }
+
+    function bindSaveHook() {
+        if (typeof window.saveState === 'function' && !window.saveState._liveBound) {
+            const orig = window.saveState;
+            const wrapped = function () {
+                const s = getStateRef();
+                if (s) saveLocalBackup(s);
+                const ret = orig.apply(this, arguments);
+                const sAfter = getStateRef();
+                if (sAfter) saveLocalBackup(sAfter);
+                if (!syncingFromCloud) queuePush();
+                return ret;
+            };
+            wrapped._liveBound = true;
+            window.saveState = wrapped;
+        }
+    }
+
+    function initLiveEngine() {
+        bindSaveHook();
+        const s = getStateRef();
+        if (s) {
+            saveLocalBackup(s);
+            checkNotifications(s, true);
+        }
+
+        const doc = getDbDoc();
+        if (!doc) return;
+
+        doc.onSnapshot(function (snap) {
+            if (!snap.exists || syncingFromCloud) return;
+            const d = snap.data() || {};
+            const ts = Number(d.updatedAt || 0);
+            if (ts && ts <= lastRecvTime) return;
+            if (Date.now() - lastSentTime < 100 && ts < lastSentTime) return;
+
+            if (d.payload && typeof d.payload === 'object') {
+                applyRemoteData(d.payload, ts);
+            }
+        }, function (err) {
+            console.warn('onSnapshot error:', err);
+        });
+
+        doc.get().then(function (snap) {
+            const cur = getStateRef();
+            if (!cur) return;
+            if (snap.exists) {
+                const d = snap.data() || {};
+                const ts = Number(d.updatedAt || 0);
+                if (d.payload && ts >= lastRecvTime) {
+                    applyRemoteData(d.payload, ts);
+                }
+            } else {
+                pushNowToCloud();
+            }
+        }).catch(function () {});
+    }
+
+    document.addEventListener('click', function () {
+        bindSaveHook();
+        if (!syncingFromCloud) setTimeout(queuePush, 80);
+    }, true);
+
+    document.addEventListener('submit', function () {
+        bindSaveHook();
+        if (!syncingFromCloud) setTimeout(queuePush, 100);
+    }, true);
+
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(initLiveEngine, 180);
+    } else {
+        document.addEventListener('DOMContentLoaded', function () {
+            setTimeout(initLiveEngine, 180);
+        });
+    }
+})();
+</script>
+<script>
+(function () {
+    const LIVE_COLLECTION = 'ebazar_live_master';
+    const LIVE_DOC_ID = 'taza_bazar_live_v1';
+    const LOCAL_BACKUP_KEY = 'ebazar_live_clean_state_v1';
+
+    let isApplyingRemote = false;
+    let pushDebounceTimer = null;
+    let lastLocalPushAt = 0;
+    let lastRemoteUpdatedAt = 0;
+    let isFirstSnapshot = true;
+    let audioContextRef = null;
+
+    const notifiedIds = new Set();
+    const notifiedRegs = new Set();
+    const notifiedOrders = new Set();
+
+    function getState() {
+        if (typeof state !== 'undefined' && state && typeof state === 'object') {
+            window.state = state;
+            return state;
+        }
+        return (window.state && typeof window.state === 'object') ? window.state : null;
+    }
+
+    function getFirestoreRef() {
+        try {
+            if (window.firebase && window.firebase.apps && window.firebase.apps.length && typeof window.firebase.firestore === 'function') {
+                return window.firebase.firestore().collection(LIVE_COLLECTION).doc(LIVE_DOC_ID);
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    function isAdminUnlockedNow() {
+        try {
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
+        } catch (_) {}
+        const st = getState();
+        const u = st && st.currentUser;
+        return Boolean(st && st.adminUnlocked === true && u && (u.role === 'admin' || u.isAdmin === true));
+    }
+
+    function playTungNotificationSound() {
+        try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (!AudioCtx) return;
+            if (!audioContextRef) audioContextRef = new AudioCtx();
+            if (audioContextRef.state === 'suspended') {
+                audioContextRef.resume().catch(function () {});
+            }
+            const t = audioContextRef.currentTime;
+            const osc = audioContextRef.createOscillator();
+            const gain = audioContextRef.createGain();
+
             osc.type = 'sine';
             osc.frequency.setValueAtTime(920, t);
             osc.frequency.exponentialRampToValueAtTime(1380, t + 0.08);
@@ -9690,26 +10029,26 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.26);
 
             osc.connect(gain);
-            gain.connect(audioCtx.destination);
+            gain.connect(audioContextRef.destination);
             osc.start(t);
             osc.stop(t + 0.27);
         } catch (_) {}
     }
 
-    ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
-        document.addEventListener(ev, function () {
+    ['pointerdown', 'keydown', 'touchstart'].forEach(function (evt) {
+        document.addEventListener(evt, function () {
             try {
-                const AC = window.AudioContext || window.webkitAudioContext;
-                if (AC && !audioCtx) audioCtx = new AC();
-                if (audioCtx && audioCtx.state === 'suspended') {
-                    audioCtx.resume().catch(function () {});
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (AudioCtx && !audioContextRef) audioContextRef = new AudioCtx();
+                if (audioContextRef && audioContextRef.state === 'suspended') {
+                    audioContextRef.resume().catch(function () {});
                 }
             } catch (_) {}
         }, { passive: true });
     });
 
-    function notifyLive(title, body, soundOn) {
-        if (soundOn) playTung();
+    function triggerTargetedAlert(title, body, withSound) {
+        if (withSound) playTungNotificationSound();
         if (typeof window.triggerMobileFrontNotification === 'function') {
             window.triggerMobileFrontNotification(title, body, 'alert');
         } else if (typeof window.showToast === 'function') {
@@ -9717,65 +10056,53 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         }
     }
 
-    function saveLatestLocal(st) {
+    function writeLocalSnapshot(st) {
         if (!st) return;
         try {
             const copy = JSON.parse(JSON.stringify(st));
             delete copy.currentUser;
             delete copy.adminUnlocked;
-            localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(copy));
+            localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(copy));
         } catch (_) {}
     }
 
-    function fireTargetedNotifications(st, isFirstLoad) {
+    function processTargetedEvents(st, isInitial) {
         if (!st) return;
-        const amAdmin = hasAdminAccess();
+        const amAdmin = isAdminUnlockedNow();
         const me = st.currentUser || null;
 
-        (Array.isArray(st.registrationRequests) ? st.registrationRequests : []).forEach(function (r, idx) {
-            if (!r || r.status !== 'pending') return;
-            const key = String(r.id || r.phone || ('r_' + idx));
-            if (!seenRegs.has(key)) {
-                seenRegs.add(key);
-                if (!isFirstLoad && amAdmin) {
-                    notifyLive(
+        (Array.isArray(st.registrationRequests) ? st.registrationRequests : []).forEach(function (req, idx) {
+            if (!req || req.status !== 'pending') return;
+            const key = String(req.id || req.phone || ('reg_' + idx));
+            if (!notifiedRegs.has(key)) {
+                notifiedRegs.add(key);
+                if (!isInitial && amAdmin) {
+                    triggerTargetedAlert(
                         'নতুন অ্যাকাউন্ট আবেদন এসেছে',
-                        (r.name || 'ব্যবহারকারী') + ' (' + (r.phone || '') + ') আবেদন করেছেন।',
+                        (req.name || 'ব্যবহারকারী') + ' (' + (req.phone || '') + ') আবেদন করেছেন।',
                         true
                     );
                 }
             }
         });
 
-        (Array.isArray(st.accounts) ? st.accounts : []).filter(function (a) {
-            return a && a.role !== 'admin' && a.nidStatus === 'pending';
-        }).forEach(function (a, idx) {
-            const key = String(a.id || a.nidNumber || ('n_' + idx));
-            if (!seenNids.has(key)) {
-                seenNids.add(key);
-                if (!isFirstLoad && amAdmin) {
-                    notifyLive(
-                        'নতুন এনআইডি ভেরিফিকেশন জমা',
-                        (a.name || 'ব্যবহারকারী') + ' এনআইডি (' + (a.nidNumber || '') + ') পাঠিয়েছেন।',
-                        true
-                    );
-                }
-            }
-        });
-
-        (Array.isArray(st.orders) ? st.orders : []).forEach(function (o, idx) {
-            if (!o) return;
-            const key = String(o.id || ('o_' + idx)) + ':' + String(o.status || '');
-            if (!seenOrders.has(key)) {
-                seenOrders.add(key);
-                if (!isFirstLoad && me) {
-                    const isBuyer = o.buyerId && me.id === o.buyerId;
-                    const isSeller = (o.targetSellerId && me.id === o.targetSellerId) ||
-                        (Array.isArray(o.sellerIds) && o.sellerIds.includes(me.id));
-                    const isRider = o.riderId && me.id === o.riderId;
-                    const isWaitingRider = me.role === 'rider' && (o.status === 'all_sellers_confirmed' || o.status === 'ready_for_rider');
-                    if (isBuyer || isSeller || isRider || isWaitingRider) {
-                        notifyLive('অর্ডার আপডেট (' + (o.id || '') + ')', 'অবস্থা: ' + (o.status || 'আপডেট হয়েছে'), true);
+        (Array.isArray(st.orders) ? st.orders : []).forEach(function (ord, idx) {
+            if (!ord) return;
+            const key = String(ord.id || ('ord_' + idx)) + ':' + String(ord.status || '');
+            if (!notifiedOrders.has(key)) {
+                notifiedOrders.add(key);
+                if (!isInitial && me) {
+                    const isBuyer = ord.buyerId && me.id === ord.buyerId;
+                    const isSeller = (ord.targetSellerId && me.id === ord.targetSellerId) ||
+                        (Array.isArray(ord.sellerIds) && ord.sellerIds.includes(me.id));
+                    const isRider = ord.riderId && me.id === ord.riderId;
+                    const isOpenRider = me.role === 'rider' && (ord.status === 'all_sellers_confirmed' || ord.status === 'ready_for_rider');
+                    if (isBuyer || isSeller || isRider || isOpenRider) {
+                        triggerTargetedAlert(
+                            'অর্ডার আপডেট (' + (ord.id || '') + ')',
+                            'বর্তমান ধাপ: ' + (ord.status || 'আপডেট হয়েছে'),
+                            true
+                        );
                     }
                 }
             }
@@ -9784,24 +10111,24 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         (Array.isArray(st.notifications) ? st.notifications : []).slice(0, 25).forEach(function (n, idx) {
             if (!n || typeof n !== 'object') return;
             const key = String(n.id || [n.title || '', n.message || n.body || '', n.time || idx].join('|'));
-            if (seenNotifs.has(key)) return;
+            if (notifiedIds.has(key)) return;
 
             const adminOnly = Boolean(n.forAdmin || n.targetRole === 'admin' || n.adminOnly);
-            const userList = Array.isArray(n.userIds) ? n.userIds : [];
-            const singleTarget = n.targetUserId || n.userId || n.toUserId || null;
+            const userIds = Array.isArray(n.userIds) ? n.userIds : [];
+            const singleId = n.targetUserId || n.userId || n.toUserId || null;
 
-            let forMe = false;
+            let isForMe = false;
             if (adminOnly) {
-                forMe = amAdmin;
+                isForMe = amAdmin;
             } else if (me) {
-                if (userList.length > 0) forMe = userList.includes(me.id);
-                else if (singleTarget) forMe = singleTarget === me.id;
-                else if (n.targetRole) forMe = me.role === n.targetRole;
+                if (userIds.length > 0) isForMe = userIds.includes(me.id);
+                else if (singleId) isForMe = singleId === me.id;
+                else if (n.targetRole) isForMe = me.role === n.targetRole;
             }
 
-            if (forMe) {
-                seenNotifs.add(key);
-                notifyLive(
+            if (isForMe) {
+                notifiedIds.add(key);
+                triggerTargetedAlert(
                     n.title || 'নতুন লাইভ নোটিফিকেশন',
                     n.message || n.body || n.text || 'নতুন আপডেট এসেছে।',
                     true
@@ -9810,37 +10137,78 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         });
     }
 
-    function pushNowToLiveCloud() {
-        const ref = getDocRef();
-        const st = getAppState();
-        if (!ref || !st || isRemoteApplying) return;
+    window.ebazarLivePart1 = {
+        getState: getState,
+        getFirestoreRef: getFirestoreRef,
+        isAdminUnlockedNow: isAdminUnlockedNow,
+        playTungNotificationSound: playTungNotificationSound,
+        triggerTargetedAlert: triggerTargetedAlert,
+        writeLocalSnapshot: writeLocalSnapshot,
+        processTargetedEvents: processTargetedEvents,
+        getFlags: function () {
+            return {
+                isApplyingRemote: isApplyingRemote,
+                lastLocalPushAt: lastLocalPushAt,
+                lastRemoteUpdatedAt: lastRemoteUpdatedAt,
+                isFirstSnapshot: isFirstSnapshot
+            };
+        },
+        setFlags: function (next) {
+            if (!next) return;
+            if (typeof next.isApplyingRemote === 'boolean') isApplyingRemote = next.isApplyingRemote;
+            if (typeof next.lastLocalPushAt === 'number') lastLocalPushAt = next.lastLocalPushAt;
+            if (typeof next.lastRemoteUpdatedAt === 'number') lastRemoteUpdatedAt = next.lastRemoteUpdatedAt;
+            if (typeof next.isFirstSnapshot === 'boolean') isFirstSnapshot = next.isFirstSnapshot;
+        },
+        getDebounceTimer: function () { return pushDebounceTimer; },
+        setDebounceTimer: function (t) { pushDebounceTimer = t; }
+    };
+})();
+</script>
+<script>
+(function () {
+    const part1 = window.ebazarLivePart1;
+    if (!part1) return;
 
-        saveLatestLocal(st);
+    function pushStateNow(forcePush) {
+        const docRef = part1.getFirestoreRef();
+        const st = part1.getState();
+        const flags = part1.getFlags();
+        if (!docRef || !st || flags.isApplyingRemote) return;
+
+        part1.writeLocalSnapshot(st);
         const nowTs = Date.now();
-        lastLocalMutationAt = nowTs;
-        lastRemoteUpdatedAt = nowTs;
+        part1.setFlags({
+            lastLocalPushAt: nowTs,
+            lastRemoteUpdatedAt: nowTs
+        });
 
         try {
             const payload = JSON.parse(JSON.stringify(st));
             delete payload.currentUser;
             delete payload.adminUnlocked;
 
-            ref.set({
+            docRef.set({
                 payload: payload,
                 updatedAt: nowTs,
-                updatedBy: (st.currentUser && st.currentUser.id) || 'user'
+                updatedBy: (st.currentUser && st.currentUser.id) || 'user',
+                forced: Boolean(forcePush)
             }).catch(function (err) {
-                console.warn('Firestore live push failed:', err);
+                console.warn('Live cloud push error:', err);
             });
         } catch (err) {
-            console.warn('Serialize failed:', err);
+            console.warn('Live payload serialize error:', err);
         }
     }
 
-    function schedulePushToLiveCloud() {
-        if (isRemoteApplying) return;
-        clearTimeout(pushTimeout);
-        pushTimeout = setTimeout(pushNowToLiveCloud, 70);
+    function scheduleStatePush() {
+        const flags = part1.getFlags();
+        if (flags.isApplyingRemote) return;
+        clearTimeout(part1.getDebounceTimer());
+        const timer = setTimeout(function () {
+            pushStateNow(false);
+        }, 70);
+        part1.setDebounceTimer(timer);
     }
 
     function refreshAllScreens() {
@@ -9856,33 +10224,34 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         } catch (_) {}
 
         try {
-            if (hasAdminAccess() && typeof window.renderAdminPanel === 'function') {
+            if (part1.isAdminUnlockedNow() && typeof window.renderAdminPanel === 'function') {
                 window.renderAdminPanel();
             }
         } catch (_) {}
     }
 
-    function applyCloudPayload(remote, remoteTs) {
-        const st = getAppState();
-        if (!st || !remote || typeof remote !== 'object') return;
+    function applyRemoteSnapshot(remotePayload, remoteTs) {
+        const st = part1.getState();
+        const flags = part1.getFlags();
+        if (!st || !remotePayload || typeof remotePayload !== 'object') return;
 
-        isRemoteApplying = true;
+        part1.setFlags({ isApplyingRemote: true });
         try {
             const keepUser = st.currentUser ? JSON.parse(JSON.stringify(st.currentUser)) : null;
             const keepAdminUnlocked = Boolean(st.adminUnlocked);
 
-            Object.keys(remote).forEach(function (k) {
-                if (k !== 'currentUser' && k !== 'adminUnlocked') {
-                    st[k] = remote[k];
+            Object.keys(remotePayload).forEach(function (key) {
+                if (key !== 'currentUser' && key !== 'adminUnlocked') {
+                    st[key] = remotePayload[key];
                 }
             });
 
             if (keepUser && Array.isArray(st.accounts)) {
-                const matched = st.accounts.find(function (a) {
-                    return a && ((keepUser.id && a.id === keepUser.id) || (keepUser.phone && a.phone === keepUser.phone));
+                const matched = st.accounts.find(function (acc) {
+                    return acc && ((keepUser.id && acc.id === keepUser.id) || (keepUser.phone && acc.phone === keepUser.phone));
                 });
                 if (matched) {
-                    const updatedMe = Object.assign({}, keepUser, {
+                    const updatedUser = Object.assign({}, keepUser, {
                         approved: matched.approved,
                         nidStatus: matched.nidStatus,
                         nidNumber: matched.nidNumber,
@@ -9892,9 +10261,9 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
                         lastWithdrawAt: matched.lastWithdrawAt
                     });
                     if (keepUser.role !== 'admin') {
-                        updatedMe.role = keepUser.role;
+                        updatedUser.role = keepUser.role;
                     }
-                    st.currentUser = updatedMe;
+                    st.currentUser = updatedUser;
                 } else {
                     st.currentUser = keepUser;
                 }
@@ -9903,101 +10272,106 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             }
 
             st.adminUnlocked = keepAdminUnlocked;
-            if (remoteTs) lastRemoteUpdatedAt = remoteTs;
-            saveLatestLocal(st);
+            if (remoteTs) {
+                part1.setFlags({ lastRemoteUpdatedAt: remoteTs });
+            }
+            part1.writeLocalSnapshot(st);
 
             refreshAllScreens();
-            fireTargetedNotifications(st, !initialLoadDone);
-            initialLoadDone = true;
+            part1.processTargetedEvents(st, !flags.isFirstSnapshot);
+            part1.setFlags({ isFirstSnapshot: false });
         } finally {
             setTimeout(function () {
-                isRemoteApplying = false;
-            }, 100);
+                part1.setFlags({ isApplyingRemote: false });
+            }, 95);
         }
     }
 
-    function hookSaveStateForLiveSync() {
-        if (typeof window.saveState === 'function' && !window.saveState._isLiveHooked) {
+    function attachSaveHook() {
+        if (typeof window.saveState === 'function' && !window.saveState._ebazarPart2Hooked) {
             const origSave = window.saveState;
             const hookedSave = function () {
-                const st = getAppState();
-                if (st) saveLatestLocal(st);
-                const res = origSave.apply(this, arguments);
-                const stAfter = getAppState();
-                if (stAfter) saveLatestLocal(stAfter);
-                if (!isRemoteApplying) {
-                    schedulePushToLiveCloud();
+                const st = part1.getState();
+                if (st) part1.writeLocalSnapshot(st);
+                const out = origSave.apply(this, arguments);
+                const stAfter = part1.getState();
+                if (stAfter) part1.writeLocalSnapshot(stAfter);
+                if (!part1.getFlags().isApplyingRemote) {
+                    scheduleStatePush();
                 }
-                return res;
+                return out;
             };
-            hookedSave._isLiveHooked = true;
+            hookedSave._ebazarPart2Hooked = true;
             window.saveState = hookedSave;
         }
     }
 
-    function startLiveSync() {
-        hookSaveStateForLiveSync();
-        const st = getAppState();
+    function startLiveListeners() {
+        attachSaveHook();
+        const st = part1.getState();
         if (st) {
-            saveLatestLocal(st);
-            fireTargetedNotifications(st, true);
+            part1.writeLocalSnapshot(st);
+            part1.processTargetedEvents(st, true);
         }
 
-        const ref = getDocRef();
-        if (!ref) return;
+        const docRef = part1.getFirestoreRef();
+        if (!docRef) return;
 
-        ref.onSnapshot(function (snap) {
-            if (!snap.exists || isRemoteApplying) return;
-            const data = snap.data() || {};
-            const ts = Number(data.updatedAt || 0);
-            if (ts && ts <= lastRemoteUpdatedAt) return;
-            if (Date.now() - lastLocalMutationAt < 120 && ts < lastLocalMutationAt) return;
+        docRef.onSnapshot(function (snap) {
+            const flags = part1.getFlags();
+            if (!snap.exists || flags.isApplyingRemote) return;
 
-            if (data.payload && typeof data.payload === 'object') {
-                applyCloudPayload(data.payload, ts);
+            const docData = snap.data() || {};
+            const ts = Number(docData.updatedAt || 0);
+            if (ts && ts <= flags.lastRemoteUpdatedAt) return;
+            if (Date.now() - flags.lastLocalPushAt < 110 && ts < flags.lastLocalPushAt) return;
+
+            if (docData.payload && typeof docData.payload === 'object') {
+                applyRemoteSnapshot(docData.payload, ts);
             }
         }, function (err) {
-            console.warn('Live listener error:', err);
+            console.warn('Live onSnapshot error:', err);
         });
 
-        ref.get().then(function (snap) {
-            const curSt = getAppState();
+        docRef.get().then(function (snap) {
+            const curSt = part1.getState();
             if (!curSt) return;
             if (snap.exists) {
-                const data = snap.data() || {};
-                const ts = Number(data.updatedAt || 0);
-                if (data.payload && ts >= lastRemoteUpdatedAt) {
-                    applyCloudPayload(data.payload, ts);
+                const docData = snap.data() || {};
+                const ts = Number(docData.updatedAt || 0);
+                if (docData.payload && ts >= part1.getFlags().lastRemoteUpdatedAt) {
+                    applyRemoteSnapshot(docData.payload, ts);
                 }
             } else {
-                pushNowToLiveCloud();
+                pushStateNow(true);
             }
         }).catch(function () {});
     }
 
     document.addEventListener('click', function () {
-        hookSaveStateForLiveSync();
-        if (!isRemoteApplying) {
-            setTimeout(schedulePushToLiveCloud, 90);
+        attachSaveHook();
+        if (!part1.getFlags().isApplyingRemote) {
+            setTimeout(scheduleStatePush, 80);
         }
     }, true);
 
     document.addEventListener('submit', function () {
-        hookSaveStateForLiveSync();
-        if (!isRemoteApplying) {
-            setTimeout(schedulePushToLiveCloud, 110);
+        attachSaveHook();
+        if (!part1.getFlags().isApplyingRemote) {
+            setTimeout(scheduleStatePush, 100);
         }
     }, true);
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(startLiveSync, 200);
+        setTimeout(startLiveListeners, 180);
     } else {
         document.addEventListener('DOMContentLoaded', function () {
-            setTimeout(startLiveSync, 200);
+            setTimeout(startLiveListeners, 180);
         });
     }
 })();
 </script>
+
 
 
 
