@@ -9627,16 +9627,25 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const STORE_KEY = 'taza_bazar_live_v6';
-    const DOC = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
-        ? firebase.firestore().collection('ebazar_realtime_master').doc('taza_bazar_live_v4')
-        : null;
+    const LIVE_COLLECTION = 'ebazar_production_live';
+    const LIVE_DOC_ID = 'taza_bazar_live_master_v1';
+    const DURABLE_STATE_KEY = 'taza_bazar_durable_state_v1';
+    const DURABLE_HIST_KEY = 'taza_bazar_durable_history_v1';
+    const DURABLE_DEL_P_KEY = 'taza_bazar_durable_del_prod_v1';
+    const DURABLE_DEL_U_KEY = 'taza_bazar_durable_del_user_v1';
 
-    let remoteLock = false;
-    let pushTimer = null;
-    let lastSig = '';
+    let applyingRemoteUpdate = false;
+    let cloudPushTimer = null;
+    let lastCloudSig = '';
+    let initialSnapshotDone = false;
+    let audioCtx = null;
 
-    function st() {
+    const seenNotifKeys = new Set();
+    const seenRegKeys = new Set();
+    const seenNidKeys = new Set();
+    const seenOrderStageKeys = new Set();
+
+    function getLiveState() {
         if (typeof state !== 'undefined' && state && typeof state === 'object') {
             window.state = state;
             return state;
@@ -9644,196 +9653,441 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return (window.state && typeof window.state === 'object') ? window.state : null;
     }
 
-    function isAdm() {
+    function getFirestoreDoc() {
+        try {
+            if (window.firebase && window.firebase.apps && window.firebase.apps.length && typeof window.firebase.firestore === 'function') {
+                return window.firebase.firestore().collection(LIVE_COLLECTION).doc(LIVE_DOC_ID);
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    function checkIsAdmin() {
         try {
             if (typeof isAdminActive === 'function' && isAdminActive()) return true;
         } catch (_) {}
-        const s = st();
-        const u = s && s.currentUser;
-        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
+        const st = getLiveState();
+        const u = st && st.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true) && st.adminUnlocked === true);
     }
 
-    // ইউজার এখন লিখছে কি না বা কোনো ইনপুটে ফোকাস আছে কি না
-    function isTypingNow() {
-        const el = document.activeElement;
-        if (!el) return false;
-        const tag = (el.tagName || '').toLowerCase();
-        return tag === 'input' || tag === 'textarea' || tag === 'select' || Boolean(el.isContentEditable);
-    }
-
-    function saveLocal(s) {
-        if (!s) return;
+    function playTungSound() {
         try {
-            const copy = JSON.parse(JSON.stringify(s));
-            delete copy.currentUser;
-            localStorage.setItem(STORE_KEY, JSON.stringify({ t: Date.now(), d: copy }));
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return;
+            if (!audioCtx) audioCtx = new AudioContextClass();
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(function () {});
+            }
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(920, now);
+            osc.frequency.exponentialRampToValueAtTime(1380, now + 0.08);
+            osc.frequency.exponentialRampToValueAtTime(680, now + 0.22);
+
+            gain.gain.setValueAtTime(0.001, now);
+            gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now);
+            osc.stop(now + 0.27);
         } catch (_) {}
     }
 
-    function loadLocal(s) {
-        if (!s) return;
+    ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
+        document.addEventListener(ev, function () {
+            try {
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                if (AudioContextClass && !audioCtx) audioCtx = new AudioContextClass();
+                if (audioCtx && audioCtx.state === 'suspended') {
+                    audioCtx.resume().catch(function () {});
+                }
+            } catch (_) {}
+        }, { passive: true });
+    });
+
+    function notifyUserLive(title, message, withSound) {
+        if (withSound) playTungSound();
+        if (typeof window.triggerMobileFrontNotification === 'function') {
+            window.triggerMobileFrontNotification(title, message, 'alert');
+        } else if (typeof window.showToast === 'function') {
+            window.showToast(title + ': ' + message, '🔔');
+        }
+    }
+
+    function mergeArrayByKey(primaryArr, secondaryArr, keyFn) {
+        const map = new Map();
+        const a = Array.isArray(secondaryArr) ? secondaryArr : [];
+        const b = Array.isArray(primaryArr) ? primaryArr : [];
+        a.concat(b).forEach(function (item, idx) {
+            if (!item || typeof item !== 'object') return;
+            const k = keyFn(item, idx);
+            if (!k) return;
+            const prev = map.get(k);
+            map.set(k, prev ? Object.assign({}, prev, item) : JSON.parse(JSON.stringify(item)));
+        });
+        return Array.from(map.values());
+    }
+
+    // অ্যাপ আপডেট বা রিলোডেও যেন কোনো ডেটা/হিস্ট্রি না মুছে
+    function preserveDurableState(st) {
+        if (!st || typeof st !== 'object') return;
         try {
-            const raw = localStorage.getItem(STORE_KEY);
-            if (!raw) return;
-            const parsed = JSON.parse(raw);
-            const d = parsed && parsed.d;
-            if (!d || typeof d !== 'object') return;
-            ['settings', 'fees', 'ads', 'products', 'accounts', 'orders', 'notifications', 'history', 'deletedProductIds', 'deletedAccountIds'].forEach(k => {
-                if (d[k] !== undefined && (s[k] === undefined || s[k] === null || (Array.isArray(s[k]) && s[k].length === 0))) {
-                    s[k] = d[k];
+            const savedDelP = JSON.parse(localStorage.getItem(DURABLE_DEL_P_KEY) || '[]');
+            const savedDelU = JSON.parse(localStorage.getItem(DURABLE_DEL_U_KEY) || '[]');
+            const savedHist = JSON.parse(localStorage.getItem(DURABLE_HIST_KEY) || '[]');
+            const savedBackupRaw = localStorage.getItem(DURABLE_STATE_KEY);
+            const savedBackup = savedBackupRaw ? JSON.parse(savedBackupRaw) : null;
+
+            const delPSet = new Set(
+                ([]).concat(st.deletedProductIds || [], savedDelP || []).map(String).filter(Boolean)
+            );
+            const delUSet = new Set(
+                ([]).concat(st.deletedAccountIds || [], savedDelU || []).map(String).filter(Boolean)
+            );
+
+            st.deletedProductIds = Array.from(delPSet);
+            st.deletedAccountIds = Array.from(delUSet);
+
+            if (savedBackup && typeof savedBackup === 'object') {
+                if ((!Array.isArray(st.accounts) || st.accounts.length === 0) && Array.isArray(savedBackup.accounts)) {
+                    st.accounts = savedBackup.accounts;
+                }
+                if ((!Array.isArray(st.products) || st.products.length === 0) && Array.isArray(savedBackup.products)) {
+                    st.products = savedBackup.products;
+                }
+                if ((!Array.isArray(st.orders) || st.orders.length === 0) && Array.isArray(savedBackup.orders)) {
+                    st.orders = savedBackup.orders;
+                }
+                if ((!Array.isArray(st.ads) || st.ads.length === 0) && Array.isArray(savedBackup.ads)) {
+                    st.ads = savedBackup.ads;
+                }
+                if (!st.settings && savedBackup.settings) {
+                    st.settings = savedBackup.settings;
+                }
+            }
+
+            if (Array.isArray(st.products)) {
+                st.products = st.products.filter(function (p) { return p && !delPSet.has(String(p.id)); });
+            }
+            if (Array.isArray(st.cart)) {
+                st.cart = st.cart.filter(function (c) { return c && !delPSet.has(String(c.productId)); });
+            }
+            if (Array.isArray(st.accounts)) {
+                st.accounts = st.accounts.filter(function (a) { return a && !delUSet.has(String(a.id)); });
+            }
+
+            st.history = mergeArrayByKey(st.history, savedHist, function (h, idx) {
+                return h.id ? String(h.id) : [h.category || '', h.title || '', h.actor || '', h.timestamp || idx].join('|');
+            });
+
+            localStorage.setItem(DURABLE_DEL_P_KEY, JSON.stringify(st.deletedProductIds));
+            localStorage.setItem(DURABLE_DEL_U_KEY, JSON.stringify(st.deletedAccountIds));
+            localStorage.setItem(DURABLE_HIST_KEY, JSON.stringify(st.history));
+
+            const snapshotCopy = JSON.parse(JSON.stringify(st));
+            delete snapshotCopy.currentUser;
+            delete snapshotCopy.adminUnlocked;
+            localStorage.setItem(DURABLE_STATE_KEY, JSON.stringify(snapshotCopy));
+        } catch (_) {}
+    }
+
+    // যার নোটিফিকেশন তার কাছেই "টুং" সাউন্ডসহ পাঠানো (অ্যাডমিনেরটা শুধু অ্যাডমিনের কাছে)
+    function dispatchTargetedLiveAlerts(st, isInitial) {
+        if (!st || typeof st !== 'object') return;
+        const amAdmin = checkIsAdmin();
+        const me = st.currentUser || null;
+
+        const regs = Array.isArray(st.registrationRequests) ? st.registrationRequests : [];
+        regs.forEach(function (r, i) {
+            if (!r || r.status !== 'pending') return;
+            const k = String(r.id || r.phone || ('reg_' + i));
+            if (!seenRegKeys.has(k)) {
+                seenRegKeys.add(k);
+                if (!isInitial && amAdmin) {
+                    notifyUserLive(
+                        'নতুন অ্যাকাউন্ট আবেদন এসেছে',
+                        (r.name || 'ব্যবহারকারী') + ' (' + (r.phone || '') + ') অনুমোদনের অনুরোধ পাঠিয়েছেন।',
+                        true
+                    );
+                }
+            }
+        });
+
+        const nids = (Array.isArray(st.accounts) ? st.accounts : []).filter(function (a) {
+            return a && a.role !== 'admin' && a.nidStatus === 'pending';
+        });
+        nids.forEach(function (a, i) {
+            const k = String(a.id || a.nidNumber || ('nid_' + i));
+            if (!seenNidKeys.has(k)) {
+                seenNidKeys.add(k);
+                if (!isInitial && amAdmin) {
+                    notifyUserLive(
+                        'নতুন এনআইডি ভেরিফিকেশন জমা',
+                        (a.name || 'ব্যবহারকারী') + ' এনআইডি (' + (a.nidNumber || '') + ') যাচাইয়ের জন্য পাঠিয়েছেন।',
+                        true
+                    );
+                }
+            }
+        });
+
+        const orders = Array.isArray(st.orders) ? st.orders : [];
+        orders.forEach(function (o, i) {
+            if (!o) return;
+            const stageKey = String(o.id || ('ord_' + i)) + '::' + String(o.status || '');
+            if (!seenOrderStageKeys.has(stageKey)) {
+                seenOrderStageKeys.add(stageKey);
+                if (!isInitial && me) {
+                    const isBuyer = o.buyerId && me.id === o.buyerId;
+                    const isSeller = (o.targetSellerId && me.id === o.targetSellerId) ||
+                        (Array.isArray(o.sellerIds) && o.sellerIds.includes(me.id));
+                    const isRider = o.riderId && me.id === o.riderId;
+                    const isCandidateRider = me.role === 'rider' && (o.status === 'all_sellers_confirmed' || o.status === 'ready_for_rider');
+
+                    if (isBuyer || isSeller || isRider || isCandidateRider) {
+                        notifyUserLive(
+                            'অর্ডার আপডেট (' + (o.id || '') + ')',
+                            'স্ট্যাটাস: ' + (o.status || 'আপডেট হয়েছে'),
+                            true
+                        );
+                    }
+                }
+            }
+        });
+
+        const notifs = Array.isArray(st.notifications) ? st.notifications : [];
+        notifs.slice(0, 25).forEach(function (n, idx) {
+            if (!n || typeof n !== 'object') return;
+            const k = String(n.id || [n.title || '', n.message || n.body || '', n.time || idx].join('|'));
+            if (seenNotifKeys.has(k)) return;
+
+            const isForAdmin = Boolean(n.forAdmin || n.targetRole === 'admin' || n.adminOnly);
+            const targetIds = Array.isArray(n.userIds) ? n.userIds : [];
+            const singleTarget = n.targetUserId || n.userId || n.toUserId || null;
+
+            let deliverToMe = false;
+            if (isForAdmin) {
+                deliverToMe = amAdmin;
+            } else if (me) {
+                if (targetIds.length > 0) {
+                    deliverToMe = targetIds.includes(me.id);
+                } else if (singleTarget) {
+                    deliverToMe = singleTarget === me.id;
+                } else if (n.targetRole) {
+                    deliverToMe = me.role === n.targetRole;
+                }
+            }
+
+            if (deliverToMe) {
+                seenNotifKeys.add(k);
+                notifyUserLive(
+                    n.title || 'নতুন লাইভ নোটিফিকেশন',
+                    n.message || n.body || n.text || 'নতুন একটি কার্যক্রম আপডেট হয়েছে।',
+                    true
+                );
+            }
+        });
+    }
+
+    // ক্লাউডে লাইভ স্টেট পুশ (কারো ডিভাইসের currentUser বা adminUnlocked ওভাররাইট ছাড়া)
+    function pushLiveStateToCloud(force) {
+        const docRef = getFirestoreDoc();
+        const st = getLiveState();
+        if (!docRef || !st || applyingRemoteUpdate) return;
+
+        preserveDurableState(st);
+
+        try {
+            const payload = JSON.parse(JSON.stringify(st));
+            delete payload.currentUser;
+            delete payload.adminUnlocked;
+
+            const sig = JSON.stringify({
+                accounts: payload.accounts || [],
+                registrationRequests: payload.registrationRequests || [],
+                products: payload.products || [],
+                deletedProductIds: payload.deletedProductIds || [],
+                deletedAccountIds: payload.deletedAccountIds || [],
+                orders: payload.orders || [],
+                notifications: payload.notifications || [],
+                ads: payload.ads || [],
+                packageRequests: payload.packageRequests || [],
+                withdrawalRequests: payload.withdrawalRequests || [],
+                passwordResetRequests: payload.passwordResetRequests || [],
+                riderDeposits: payload.riderDeposits || [],
+                history: payload.history || [],
+                settings: payload.settings || {},
+                liveLocations: payload.liveLocations || {}
+            });
+
+            if (!force && sig === lastCloudSig) return;
+            lastCloudSig = sig;
+
+            docRef.set({
+                payload: payload,
+                updatedAt: Date.now(),
+                updatedBy: (st.currentUser && st.currentUser.id) || 'guest'
+            }, { merge: true }).catch(function () {});
+        } catch (_) {}
+    }
+
+    function scheduleLiveCloudPush() {
+        if (applyingRemoteUpdate) return;
+        clearTimeout(cloudPushTimer);
+        cloudPushTimer = setTimeout(function () {
+            pushLiveStateToCloud(false);
+        }, 100);
+    }
+
+    // ক্লাউড থেকে রিয়েল-টাইম আপডেট গ্রহণ ও লোকাল সেশন সুরক্ষিত রাখা
+    function applyRemoteLiveSnapshot(remotePayload) {
+        const st = getLiveState();
+        if (!st || !remotePayload || typeof remotePayload !== 'object') return;
+
+        applyingRemoteUpdate = true;
+        try {
+            const keepUser = st.currentUser ? JSON.parse(JSON.stringify(st.currentUser)) : null;
+            const keepAdminUnlocked = Boolean(st.adminUnlocked);
+
+            const delP = new Set((remotePayload.deletedProductIds || st.deletedProductIds || []).map(String));
+            const delU = new Set((remotePayload.deletedAccountIds || st.deletedAccountIds || []).map(String));
+
+            Object.keys(remotePayload).forEach(function (key) {
+                if (key !== 'currentUser' && key !== 'adminUnlocked') {
+                    st[key] = remotePayload[key];
                 }
             });
-            if (d.settings && typeof d.settings === 'object') {
-                s.settings = Object.assign({}, d.settings, s.settings || {});
+
+            st.deletedProductIds = Array.from(delP);
+            st.deletedAccountIds = Array.from(delU);
+
+            if (Array.isArray(st.products)) {
+                st.products = st.products.filter(function (p) { return p && !delP.has(String(p.id)); });
             }
-        } catch (_) {}
+            if (Array.isArray(st.accounts)) {
+                st.accounts = st.accounts.filter(function (a) { return a && !delU.has(String(a.id)); });
+            }
+
+            // নিজের অ্যাকাউন্টের অনুমোদন/এনআইডি/ওয়ালেট স্ট্যাটাস সিঙ্ক হবে, কিন্তু রোল/অ্যাডমিন এক্সেস জোর করে বদলাবে না
+            if (keepUser && Array.isArray(st.accounts)) {
+                const freshAcc = st.accounts.find(function (a) {
+                    return a && ((keepUser.id && a.id === keepUser.id) || (keepUser.phone && a.phone === keepUser.phone));
+                });
+                if (freshAcc) {
+                    const mergedUser = Object.assign({}, keepUser, {
+                        approved: freshAcc.approved,
+                        nidStatus: freshAcc.nidStatus,
+                        nidNumber: freshAcc.nidNumber,
+                        nidImg: freshAcc.nidImg,
+                        package: freshAcc.package,
+                        wallet: freshAcc.wallet,
+                        lastWithdrawAt: freshAcc.lastWithdrawAt
+                    });
+                    if (keepUser.role !== 'admin') {
+                        mergedUser.role = keepUser.role;
+                    }
+                    st.currentUser = mergedUser;
+                } else {
+                    st.currentUser = keepUser;
+                }
+            } else {
+                st.currentUser = keepUser;
+            }
+
+            st.adminUnlocked = keepAdminUnlocked;
+            preserveDurableState(st);
+
+            try {
+                if (typeof window.syncAllUI === 'function') {
+                    window.syncAllUI();
+                } else {
+                    if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid();
+                    if (typeof window.renderOrdersTab === 'function') window.renderOrdersTab();
+                    if (typeof window.renderDedicatedWalletTab === 'function') window.renderDedicatedWalletTab();
+                    if (typeof window.renderAccountTab === 'function') window.renderAccountTab();
+                }
+            } catch (_) {}
+
+            try {
+                if (checkIsAdmin() && typeof window.renderAdminPanel === 'function') {
+                    window.renderAdminPanel();
+                }
+            } catch (_) {}
+
+            dispatchTargetedLiveAlerts(st, !initialSnapshotDone);
+            initialSnapshotDone = true;
+        } finally {
+            setTimeout(function () {
+                applyingRemoteUpdate = false;
+            }, 120);
+        }
     }
 
-    function sigOf(p) {
-        return JSON.stringify({
-            settings: p.settings,
-            fees: p.fees,
-            ads: p.ads,
-            products: p.products,
-            accounts: p.accounts,
-            registrationRequests: p.registrationRequests,
-            nidRequests: p.nidRequests,
-            orders: p.orders,
-            notifications: p.notifications,
-            packageRequests: p.packageRequests,
-            withdrawalRequests: p.withdrawalRequests,
-            riderDeposits: p.riderDeposits,
-            history: p.history,
-            deletedProductIds: p.deletedProductIds,
-            deletedAccountIds: p.deletedAccountIds
+    function initLiveRealtimeEngine() {
+        const st = getLiveState();
+        if (st) {
+            preserveDurableState(st);
+            dispatchTargetedLiveAlerts(st, true);
+        }
+
+        const docRef = getFirestoreDoc();
+        if (!docRef) return;
+
+        docRef.onSnapshot(function (snap) {
+            if (!snap.exists || applyingRemoteUpdate) return;
+            const data = snap.data() || {};
+            if (data.payload && typeof data.payload === 'object') {
+                applyRemoteLiveSnapshot(data.payload);
+            }
+        }, function (err) {
+            console.warn('Live snapshot error:', err);
         });
-    }
 
-    function pushCloud(force) {
-        if (!DOC || remoteLock) return;
-        const s = st();
-        if (!s) return;
-        try {
-            const p = JSON.parse(JSON.stringify(s));
-            delete p.currentUser;
-            const h = sigOf(p);
-            if (!force && h === lastSig) return;
-            lastSig = h;
-            DOC.set({
-                payload: p,
-                updatedAt: Date.now(),
-                by: (s.currentUser && s.currentUser.id) || 'admin'
-            }).catch(() => {});
-        } catch (_) {}
-    }
-
-    function schedulePush() {
-        if (!DOC || remoteLock) return;
-        clearTimeout(pushTimer);
-        pushTimer = setTimeout(() => pushCloud(false), 300);
-    }
-
-    // শুধু টাইপ করার সময় ভ্যালু সেভ হবে; কোনো রেন্ডার হবে না যাতে কিবোর্ড না নামে
-    document.addEventListener('input', function (e) {
-        const el = e.target;
-        if (!el) return;
-        const s = st();
-        if (!s) return;
-        const key = el.id || el.name || el.getAttribute('data-key');
-        if (key && (isAdm() || el.closest('#adminModalBodyContainer, #adminPanelBodyContainer, #inlineAdminPanelHost, [id*="admin" i]'))) {
-            if (!s.settings || typeof s.settings !== 'object') s.settings = {};
-            s.settings[key] = el.type === 'checkbox' ? el.checked : el.value;
-            saveLocal(s);
-            schedulePush();
-        }
-    }, true);
-
-    // বাটনে চাপ দিলে আপডেট সেভ ও লাইভ পুশ হবে
-    document.addEventListener('click', function (e) {
-        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
-        if (!btn) return;
-        const inAdmin = Boolean(
-            btn.closest('#adminModalBodyContainer, #adminPanelBodyContainer, #inlineAdminPanelHost, [id*="admin" i]')
-        );
-        if (!inAdmin && !isAdm()) return;
-
-        const txt = (btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('onclick') || '');
-        if (/save|update|approve|accept|reject|verify|delete|toggle|add|সেভ|আপডেট|অনুমোদন|এক্সেপ্ট|বাতিল|যাচাই|ডিলিট|অফ|অন|যোগ|চালু|বন্ধ/i.test(txt)) {
-            setTimeout(() => {
-                const s = st();
-                if (!s) return;
-                saveLocal(s);
-                try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
-                pushCloud(true);
-                if (!isTypingNow()) {
-                    try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
-                    try { if (typeof window.renderAdminPanel === 'function' && isAdm()) window.renderAdminPanel(); } catch (_) {}
+        docRef.get().then(function (snap) {
+            if (!snap.exists && getLiveState()) {
+                pushLiveStateToCloud(true);
+            } else if (snap.exists) {
+                const d = snap.data() || {};
+                if (d.payload && !initialSnapshotDone) {
+                    applyRemoteLiveSnapshot(d.payload);
                 }
-                if (typeof window.showToast === 'function') {
-                    window.showToast('আপডেট সেভ ও লাইভ হয়েছে', '✅');
-                }
-            }, 80);
-        }
-    }, true);
+            }
+        }).catch(function () {});
+    }
+
+    // saveState ও loadState-এর সাথে নিরাপদ সংযোগ
+    if (typeof window.saveState === 'function') {
+        const origSave = window.saveState;
+        window.saveState = function () {
+            const st = getLiveState();
+            if (st) preserveDurableState(st);
+            const res = origSave.apply(this, arguments);
+            if (st) preserveDurableState(st);
+            scheduleLiveCloudPush();
+            return res;
+        };
+    }
 
     if (typeof window.loadState === 'function') {
-        const origL = window.loadState;
+        const origLoad = window.loadState;
         window.loadState = function () {
-            const r = origL.apply(this, arguments);
-            const s = st();
-            if (s) loadLocal(s);
-            return r;
+            const res = origLoad.apply(this, arguments);
+            const st = getLiveState();
+            if (st) preserveDurableState(st);
+            return res;
         };
     }
 
-    if (typeof window.saveState === 'function') {
-        const origS = window.saveState;
-        window.saveState = function () {
-            const r = origS.apply(this, arguments);
-            const s = st();
-            if (s) saveLocal(s);
-            schedulePush();
-            return r;
-        };
+    document.addEventListener('DOMContentLoaded', function () {
+        setTimeout(initLiveRealtimeEngine, 250);
+    });
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(initLiveRealtimeEngine, 250);
     }
-
-    if (DOC) {
-        DOC.onSnapshot(snap => {
-            if (!snap.exists || remoteLock) return;
-            // কিবোর্ড খোলা থাকলে বা টাইপ করলে রিমোট রেন্ডার আটকে রাখবে
-            if (isTypingNow()) return;
-
-            const s = st();
-            if (!s) return;
-            const remote = (snap.data() || {}).payload;
-            if (!remote || typeof remote !== 'object') return;
-
-            const h = sigOf(remote);
-            if (h === lastSig) return;
-
-            remoteLock = true;
-            try {
-                lastSig = h;
-                const keepMe = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
-                Object.keys(remote).forEach(k => {
-                    if (k !== 'currentUser') s[k] = remote[k];
-                });
-                s.currentUser = keepMe;
-                saveLocal(s);
-
-                try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
-                try { if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid(); } catch (_) {}
-                try { if (typeof window.renderAdminPanel === 'function' && isAdm()) window.renderAdminPanel(); } catch (_) {}
-            } finally {
-                setTimeout(() => { remoteLock = false; }, 120);
-            }
-        });
-    }
-
-    setTimeout(() => {
-        const s = st();
-        if (s) loadLocal(s);
-    }, 250);
 })();
 </script>
 
