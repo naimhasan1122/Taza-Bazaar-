@@ -9625,6 +9625,214 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 })();
 </script>
 
+<script>
+(function () {
+    const ADMIN_LIVE_DOC = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
+        ? firebase.firestore().collection('ebazar_realtime_master').doc('taza_bazar_live_v4')
+        : null;
+
+    const ADMIN_SNAPSHOT_KEY = 'taza_bazar_admin_live_backup_v4';
+    let syncLock = false;
+    let adminPushTimer = null;
+    let lastAdminHash = '';
+
+    function getStateObj() {
+        if (typeof state !== 'undefined' && state && typeof state === 'object') {
+            window.state = state;
+            return state;
+        }
+        return (window.state && typeof window.state === 'object') ? window.state : null;
+    }
+
+    function checkIsAdmin() {
+        try {
+            if (typeof isAdminActive === 'function' && isAdminActive()) return true;
+        } catch (_) {}
+        const s = getStateObj();
+        const u = s && s.currentUser;
+        return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
+    }
+
+    function toastAdmin(msg, icon) {
+        try {
+            if (typeof window.showToast === 'function') {
+                window.showToast(msg, icon || '✅');
+            }
+        } catch (_) {}
+    }
+
+    // অ্যাডমিন প্যানেলের ভেতরের ইনপুট/সিলেক্ট থেকে সরাসরি state সেটিংস/ফি আপডেট করা
+    function syncAdminInputsIntoState(s) {
+        if (!s || !checkIsAdmin()) return;
+        const adminContainer =
+            document.getElementById('adminModalBodyContainer') ||
+            document.getElementById('adminPanelBodyContainer') ||
+            document.getElementById('inlineAdminPanelHost');
+        if (!adminContainer) return;
+
+        if (!s.settings || typeof s.settings !== 'object') s.settings = {};
+
+        adminContainer.querySelectorAll('input, select, textarea').forEach(el => {
+            const key = el.id || el.name || el.getAttribute('data-setting-key');
+            if (!key) return;
+            const val = el.type === 'checkbox' ? el.checked : el.value;
+            s.settings[key] = val;
+            if (s.fees && typeof s.fees === 'object' && Object.prototype.hasOwnProperty.call(s.fees, key)) {
+                const num = Number(val);
+                s.fees[key] = Number.isNaN(num) ? val : num;
+            }
+        });
+    }
+
+    function saveLocalAdminBackup(s) {
+        if (!s) return;
+        try {
+            const copy = JSON.parse(JSON.stringify(s));
+            delete copy.currentUser;
+            localStorage.setItem(ADMIN_SNAPSHOT_KEY, JSON.stringify({
+                savedAt: Date.now(),
+                data: copy
+            }));
+        } catch (_) {}
+    }
+
+    function pushAdminStateToCloud(forceNow) {
+        if (!ADMIN_LIVE_DOC || syncLock) return;
+        const s = getStateObj();
+        if (!s) return;
+
+        syncAdminInputsIntoState(s);
+        saveLocalAdminBackup(s);
+
+        try {
+            const payload = JSON.parse(JSON.stringify(s));
+            delete payload.currentUser;
+            const sig = JSON.stringify({
+                accounts: payload.accounts,
+                registrationRequests: payload.registrationRequests,
+                nidRequests: payload.nidRequests,
+                products: payload.products,
+                deletedProductIds: payload.deletedProductIds,
+                deletedAccountIds: payload.deletedAccountIds,
+                orders: payload.orders,
+                notifications: payload.notifications,
+                ads: payload.ads,
+                packageRequests: payload.packageRequests,
+                withdrawalRequests: payload.withdrawalRequests,
+                riderDeposits: payload.riderDeposits,
+                settings: payload.settings,
+                fees: payload.fees
+            });
+
+            if (!forceNow && sig === lastAdminHash) return;
+            lastAdminHash = sig;
+
+            ADMIN_LIVE_DOC.set({
+                payload: payload,
+                updatedAt: Date.now(),
+                by: (s.currentUser && s.currentUser.id) || 'admin_live'
+            }).catch(() => {});
+        } catch (_) {}
+    }
+
+    function triggerInstantAdminUpdate(msg) {
+        const s = getStateObj();
+        if (!s) return;
+        syncAdminInputsIntoState(s);
+        saveLocalAdminBackup(s);
+
+        try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
+        try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+        try { if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid(); } catch (_) {}
+        try { if (typeof window.renderAdminPanel === 'function' && checkIsAdmin()) window.renderAdminPanel(); } catch (_) {}
+
+        clearTimeout(adminPushTimer);
+        pushAdminStateToCloud(true);
+        adminPushTimer = setTimeout(() => pushAdminStateToCloud(true), 250);
+
+        if (msg) toastAdmin(msg, '⚡');
+    }
+
+    // অ্যাডমিন প্যানেলে যেকোনো বাটনে ক্লিক করলে সাথে সাথে আপডেট সেভ ও লাইভ পুশ করা
+    document.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (!btn) return;
+
+        const inAdmin = Boolean(
+            btn.closest('#adminModalBodyContainer, #adminPanelBodyContainer, #inlineAdminPanelHost, [id*="admin" i]')
+        );
+        if (!inAdmin && !checkIsAdmin()) return;
+
+        const txt = (btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('onclick') || '');
+        if (/save|update|approve|accept|reject|verify|delete|toggle|সেভ|আপডেট|অনুমোদন|এক্সেপ্ট|বাতিল|যাচাই|ডিলিট|অফ|অন|চালু|বন্ধ/i.test(txt)) {
+            setTimeout(() => {
+                triggerInstantAdminUpdate('অ্যাডমিন আপডেট লাইভ হয়েছে');
+            }, 60);
+        }
+    }, true);
+
+    // অ্যাডমিন প্যানেলে ইনপুট/সিলেক্ট বদলালে সাথে সাথে সেভ ও পুশ করা
+    document.addEventListener('change', function (e) {
+        const el = e.target;
+        if (!el) return;
+        const inAdmin = Boolean(
+            el.closest('#adminModalBodyContainer, #adminPanelBodyContainer, #inlineAdminPanelHost, [id*="admin" i]')
+        );
+        if (!inAdmin) return;
+        setTimeout(() => {
+            triggerInstantAdminUpdate('');
+        }, 40);
+    }, true);
+
+    // ক্লাউড থেকে লাইভ আপডেট এলে সব স্ক্রিন ও অ্যাডমিন প্যানেল সাথে সাথে রিফ্রেশ করা
+    if (ADMIN_LIVE_DOC) {
+        ADMIN_LIVE_DOC.onSnapshot(snap => {
+            if (!snap.exists || syncLock) return;
+            const s = getStateObj();
+            if (!s) return;
+            const doc = snap.data() || {};
+            const remote = doc.payload;
+            if (!remote || typeof remote !== 'object') return;
+
+            const remoteSig = JSON.stringify({
+                accounts: remote.accounts,
+                registrationRequests: remote.registrationRequests,
+                nidRequests: remote.nidRequests,
+                products: remote.products,
+                orders: remote.orders,
+                notifications: remote.notifications,
+                ads: remote.ads,
+                packageRequests: remote.packageRequests,
+                withdrawalRequests: remote.withdrawalRequests,
+                riderDeposits: remote.riderDeposits,
+                settings: remote.settings,
+                fees: remote.fees
+            });
+            if (remoteSig === lastAdminHash) return;
+
+            syncLock = true;
+            try {
+                lastAdminHash = remoteSig;
+                const keepUser = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
+                Object.keys(remote).forEach(k => {
+                    if (k !== 'currentUser') s[k] = remote[k];
+                });
+                s.currentUser = keepUser;
+                saveLocalAdminBackup(s);
+
+                try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+                try { if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid(); } catch (_) {}
+                try { if (typeof window.renderAdminPanel === 'function' && checkIsAdmin()) window.renderAdminPanel(); } catch (_) {}
+            } finally {
+                setTimeout(() => { syncLock = false; }, 80);
+            }
+        });
+    }
+
+    window.forceAdminLiveUpdate = triggerInstantAdminUpdate;
+})();
+</script>
+
 
 </body>
 	</html>
