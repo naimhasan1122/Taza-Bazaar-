@@ -9627,16 +9627,16 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const STORAGE_KEY = 'ebazar_admin_persistent_v1';
-    const fsDoc = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
+    const STORE_KEY = 'taza_bazar_live_v6';
+    const DOC = (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length)
         ? firebase.firestore().collection('ebazar_realtime_master').doc('taza_bazar_live_v4')
         : null;
 
-    let syncingRemote = false;
-    let lastHash = '';
+    let remoteLock = false;
     let pushTimer = null;
+    let lastSig = '';
 
-    function getState() {
+    function st() {
         if (typeof state !== 'undefined' && state && typeof state === 'object') {
             window.state = state;
             return state;
@@ -9644,241 +9644,195 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return (window.state && typeof window.state === 'object') ? window.state : null;
     }
 
-    function isAdminUser() {
+    function isAdm() {
         try {
             if (typeof isAdminActive === 'function' && isAdminActive()) return true;
         } catch (_) {}
-        const s = getState();
+        const s = st();
         const u = s && s.currentUser;
         return Boolean(u && (u.role === 'admin' || u.isAdmin === true));
     }
 
-    function isEditingField() {
+    // ইউজার এখন লিখছে কি না বা কোনো ইনপুটে ফোকাস আছে কি না
+    function isTypingNow() {
         const el = document.activeElement;
         if (!el) return false;
         const tag = (el.tagName || '').toLowerCase();
         return tag === 'input' || tag === 'textarea' || tag === 'select' || Boolean(el.isContentEditable);
     }
 
-    // অ্যাডমিন প্যানেলের সব ইনপুট/সিলেক্টের মান state-এ তুলে নেওয়া
-    function collectAdminFields(s) {
-        if (!s) return;
-        const panel =
-            document.getElementById('adminModalBodyContainer') ||
-            document.getElementById('adminPanelBodyContainer') ||
-            document.getElementById('inlineAdminPanelHost');
-        if (!panel) return;
-
-        if (!s.settings || typeof s.settings !== 'object') s.settings = {};
-        panel.querySelectorAll('input, textarea, select').forEach(inp => {
-            if (inp.type === 'button' || inp.type === 'submit' || inp.type === 'reset') return;
-            const key = inp.id || inp.name || inp.getAttribute('data-key');
-            if (!key) return;
-            const val = inp.type === 'checkbox' ? inp.checked : inp.value;
-            s.settings[key] = val;
-            if (s.fees && typeof s.fees === 'object' && Object.prototype.hasOwnProperty.call(s.fees, key)) {
-                const num = Number(val);
-                s.fees[key] = Number.isNaN(num) ? val : num;
-            }
-        });
-    }
-
-    function writePersistentLocal(s) {
+    function saveLocal(s) {
         if (!s) return;
         try {
-            const snapshot = JSON.parse(JSON.stringify(s));
-            delete snapshot.currentUser;
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({
-                updatedAt: Date.now(),
-                state: snapshot
-            }));
+            const copy = JSON.parse(JSON.stringify(s));
+            delete copy.currentUser;
+            localStorage.setItem(STORE_KEY, JSON.stringify({ t: Date.now(), d: copy }));
         } catch (_) {}
     }
 
-    function restorePersistentLocal(s) {
+    function loadLocal(s) {
         if (!s) return;
         try {
-            const raw = localStorage.getItem(STORAGE_KEY);
+            const raw = localStorage.getItem(STORE_KEY);
             if (!raw) return;
             const parsed = JSON.parse(raw);
-            const saved = parsed && parsed.state;
-            if (!saved || typeof saved !== 'object') return;
-
-            ['settings', 'fees', 'ads', 'products', 'accounts', 'orders', 'notifications', 'history'].forEach(k => {
-                if (saved[k] !== undefined && (s[k] === undefined || s[k] === null || (Array.isArray(s[k]) && s[k].length === 0))) {
-                    s[k] = saved[k];
+            const d = parsed && parsed.d;
+            if (!d || typeof d !== 'object') return;
+            ['settings', 'fees', 'ads', 'products', 'accounts', 'orders', 'notifications', 'history', 'deletedProductIds', 'deletedAccountIds'].forEach(k => {
+                if (d[k] !== undefined && (s[k] === undefined || s[k] === null || (Array.isArray(s[k]) && s[k].length === 0))) {
+                    s[k] = d[k];
                 }
             });
-            if (saved.settings && typeof saved.settings === 'object') {
-                s.settings = Object.assign({}, saved.settings, s.settings || {});
+            if (d.settings && typeof d.settings === 'object') {
+                s.settings = Object.assign({}, d.settings, s.settings || {});
             }
         } catch (_) {}
     }
 
-    function buildSyncHash(obj) {
+    function sigOf(p) {
         return JSON.stringify({
-            settings: obj.settings,
-            fees: obj.fees,
-            ads: obj.ads,
-            products: obj.products,
-            accounts: obj.accounts,
-            registrationRequests: obj.registrationRequests,
-            nidRequests: obj.nidRequests,
-            orders: obj.orders,
-            notifications: obj.notifications,
-            packageRequests: obj.packageRequests,
-            withdrawalRequests: obj.withdrawalRequests,
-            riderDeposits: obj.riderDeposits,
-            history: obj.history,
-            deletedProductIds: obj.deletedProductIds,
-            deletedAccountIds: obj.deletedAccountIds
+            settings: p.settings,
+            fees: p.fees,
+            ads: p.ads,
+            products: p.products,
+            accounts: p.accounts,
+            registrationRequests: p.registrationRequests,
+            nidRequests: p.nidRequests,
+            orders: p.orders,
+            notifications: p.notifications,
+            packageRequests: p.packageRequests,
+            withdrawalRequests: p.withdrawalRequests,
+            riderDeposits: p.riderDeposits,
+            history: p.history,
+            deletedProductIds: p.deletedProductIds,
+            deletedAccountIds: p.deletedAccountIds
         });
     }
 
-    function pushToCloudNow(force) {
-        if (!fsDoc || syncingRemote) return;
-        const s = getState();
+    function pushCloud(force) {
+        if (!DOC || remoteLock) return;
+        const s = st();
         if (!s) return;
         try {
-            const payload = JSON.parse(JSON.stringify(s));
-            delete payload.currentUser;
-            const h = buildSyncHash(payload);
-            if (!force && h === lastHash) return;
-            lastHash = h;
-            fsDoc.set({
-                payload: payload,
+            const p = JSON.parse(JSON.stringify(s));
+            delete p.currentUser;
+            const h = sigOf(p);
+            if (!force && h === lastSig) return;
+            lastSig = h;
+            DOC.set({
+                payload: p,
                 updatedAt: Date.now(),
                 by: (s.currentUser && s.currentUser.id) || 'admin'
             }).catch(() => {});
         } catch (_) {}
     }
 
-    function scheduleCloudPush() {
-        if (!fsDoc || syncingRemote) return;
+    function schedulePush() {
+        if (!DOC || remoteLock) return;
         clearTimeout(pushTimer);
-        pushTimer = setTimeout(() => pushToCloudNow(false), 150);
+        pushTimer = setTimeout(() => pushCloud(false), 300);
     }
 
-    // অ্যাডমিন আপডেট স্থায়ীভাবে সেভ ও লাইভ পাঠানোর মূল ফাংশন
-    window.commitAdminLiveUpdate = function (toastText) {
-        const s = getState();
+    // শুধু টাইপ করার সময় ভ্যালু সেভ হবে; কোনো রেন্ডার হবে না যাতে কিবোর্ড না নামে
+    document.addEventListener('input', function (e) {
+        const el = e.target;
+        if (!el) return;
+        const s = st();
         if (!s) return;
-        collectAdminFields(s);
-        writePersistentLocal(s);
-        try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
-        try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
-        try { if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid(); } catch (_) {}
-        if (!isEditingField()) {
-            try { if (typeof window.renderAdminPanel === 'function' && isAdminUser()) window.renderAdminPanel(); } catch (_) {}
+        const key = el.id || el.name || el.getAttribute('data-key');
+        if (key && (isAdm() || el.closest('#adminModalBodyContainer, #adminPanelBodyContainer, #inlineAdminPanelHost, [id*="admin" i]'))) {
+            if (!s.settings || typeof s.settings !== 'object') s.settings = {};
+            s.settings[key] = el.type === 'checkbox' ? el.checked : el.value;
+            saveLocal(s);
+            schedulePush();
         }
-        pushToCloudNow(true);
-        if (toastText && typeof window.showToast === 'function') {
-            window.showToast(toastText, '✅');
-        }
-    };
+    }, true);
 
-    // বাটন ক্লিক (e.preventDefault ছাড়া, কিবোর্ড/ফোকাসে কোনো বাধা নেই)
+    // বাটনে চাপ দিলে আপডেট সেভ ও লাইভ পুশ হবে
     document.addEventListener('click', function (e) {
         const btn = e.target && e.target.closest ? e.target.closest('button') : null;
         if (!btn) return;
         const inAdmin = Boolean(
             btn.closest('#adminModalBodyContainer, #adminPanelBodyContainer, #inlineAdminPanelHost, [id*="admin" i]')
         );
-        if (!inAdmin && !isAdminUser()) return;
+        if (!inAdmin && !isAdm()) return;
 
-        const label = (btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('onclick') || '');
-        if (/save|update|approve|accept|reject|verify|delete|toggle|add|সেভ|আপডেট|অনুমোদন|এক্সেপ্ট|বাতিল|যাচাই|ডিলিট|অফ|অন|যোগ|চালু|বন্ধ/i.test(label)) {
+        const txt = (btn.innerText || btn.textContent || '') + ' ' + (btn.getAttribute('onclick') || '');
+        if (/save|update|approve|accept|reject|verify|delete|toggle|add|সেভ|আপডেট|অনুমোদন|এক্সেপ্ট|বাতিল|যাচাই|ডিলিট|অফ|অন|যোগ|চালু|বন্ধ/i.test(txt)) {
             setTimeout(() => {
-                window.commitAdminLiveUpdate('আপডেট সেভ ও লাইভ হয়েছে');
+                const s = st();
+                if (!s) return;
+                saveLocal(s);
+                try { if (typeof window.saveState === 'function') window.saveState(); } catch (_) {}
+                pushCloud(true);
+                if (!isTypingNow()) {
+                    try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+                    try { if (typeof window.renderAdminPanel === 'function' && isAdm()) window.renderAdminPanel(); } catch (_) {}
+                }
+                if (typeof window.showToast === 'function') {
+                    window.showToast('আপডেট সেভ ও লাইভ হয়েছে', '✅');
+                }
             }, 80);
         }
     }, true);
 
-    // ইনপুট বদলালে শুধু state ও লোকাল ব্যাকআপে লিখে রাখা (রেন্ডার নয়, তাই কিবোর্ড ও লেখা স্বাভাবিক থাকে)
-    document.addEventListener('input', function (e) {
-        const target = e.target;
-        if (!target) return;
-        const s = getState();
-        if (!s) return;
-        const key = target.id || target.name || target.getAttribute('data-key');
-        if (key && (isAdminUser() || target.closest('#adminModalBodyContainer, #adminPanelBodyContainer, #inlineAdminPanelHost, [id*="admin" i]'))) {
-            if (!s.settings || typeof s.settings !== 'object') s.settings = {};
-            s.settings[key] = target.type === 'checkbox' ? target.checked : target.value;
-            writePersistentLocal(s);
-            scheduleCloudPush();
-        }
-    }, true);
-
     if (typeof window.loadState === 'function') {
-        const origLoad = window.loadState;
+        const origL = window.loadState;
         window.loadState = function () {
-            const res = origLoad.apply(this, arguments);
-            const s = getState();
-            if (s) restorePersistentLocal(s);
-            return res;
+            const r = origL.apply(this, arguments);
+            const s = st();
+            if (s) loadLocal(s);
+            return r;
         };
     }
 
     if (typeof window.saveState === 'function') {
-        const origSave = window.saveState;
+        const origS = window.saveState;
         window.saveState = function () {
-            const res = origSave.apply(this, arguments);
-            const s = getState();
-            if (s) writePersistentLocal(s);
-            scheduleCloudPush();
-            return res;
+            const r = origS.apply(this, arguments);
+            const s = st();
+            if (s) saveLocal(s);
+            schedulePush();
+            return r;
         };
     }
 
-    if (fsDoc) {
-        fsDoc.onSnapshot(snap => {
-            if (!snap.exists || syncingRemote) return;
-            const s = getState();
+    if (DOC) {
+        DOC.onSnapshot(snap => {
+            if (!snap.exists || remoteLock) return;
+            // কিবোর্ড খোলা থাকলে বা টাইপ করলে রিমোট রেন্ডার আটকে রাখবে
+            if (isTypingNow()) return;
+
+            const s = st();
             if (!s) return;
             const remote = (snap.data() || {}).payload;
             if (!remote || typeof remote !== 'object') return;
 
-            const h = buildSyncHash(remote);
-            if (h === lastHash) return;
+            const h = sigOf(remote);
+            if (h === lastSig) return;
 
-            syncingRemote = true;
+            remoteLock = true;
             try {
-                lastHash = h;
+                lastSig = h;
                 const keepMe = s.currentUser ? JSON.parse(JSON.stringify(s.currentUser)) : null;
-                const typingNow = isEditingField();
-
                 Object.keys(remote).forEach(k => {
-                    if (k === 'currentUser') return;
-                    if (k === 'settings' && typingNow && s.settings) {
-                        const active = document.activeElement;
-                        const activeKey = active && (active.id || active.name);
-                        const merged = Object.assign({}, remote.settings || {});
-                        if (activeKey && Object.prototype.hasOwnProperty.call(s.settings, activeKey)) {
-                            merged[activeKey] = s.settings[activeKey];
-                        }
-                        s.settings = merged;
-                    } else {
-                        s[k] = remote[k];
-                    }
+                    if (k !== 'currentUser') s[k] = remote[k];
                 });
-
                 s.currentUser = keepMe;
-                writePersistentLocal(s);
+                saveLocal(s);
 
-                if (!typingNow) {
-                    try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
-                    try { if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid(); } catch (_) {}
-                    try { if (typeof window.renderAdminPanel === 'function' && isAdminUser()) window.renderAdminPanel(); } catch (_) {}
-                }
+                try { if (typeof window.syncAllUI === 'function') window.syncAllUI(); } catch (_) {}
+                try { if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid(); } catch (_) {}
+                try { if (typeof window.renderAdminPanel === 'function' && isAdm()) window.renderAdminPanel(); } catch (_) {}
             } finally {
-                setTimeout(() => { syncingRemote = false; }, 100);
+                setTimeout(() => { remoteLock = false; }, 120);
             }
         });
     }
 
     setTimeout(() => {
-        const s = getState();
-        if (s) restorePersistentLocal(s);
+        const s = st();
+        if (s) loadLocal(s);
     }, 250);
 })();
 </script>
