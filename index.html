@@ -9627,25 +9627,23 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
 
 <script>
 (function () {
-    const LIVE_COLLECTION = 'ebazar_production_live';
-    const LIVE_DOC_ID = 'taza_bazar_live_master_v1';
-    const DURABLE_STATE_KEY = 'taza_bazar_durable_state_v1';
-    const DURABLE_HIST_KEY = 'taza_bazar_durable_history_v1';
-    const DURABLE_DEL_P_KEY = 'taza_bazar_durable_del_prod_v1';
-    const DURABLE_DEL_U_KEY = 'taza_bazar_durable_del_user_v1';
+    const LIVE_COL = 'ebazar_live_sync_room';
+    const LIVE_DOC = 'main_live_state';
+    const LOCAL_SNAPSHOT_KEY = 'ebazar_live_latest_state_v5';
 
-    let applyingRemoteUpdate = false;
-    let cloudPushTimer = null;
-    let lastCloudSig = '';
-    let initialSnapshotDone = false;
+    let isRemoteApplying = false;
+    let pushTimeout = null;
+    let lastLocalMutationAt = 0;
+    let lastRemoteUpdatedAt = 0;
+    let initialLoadDone = false;
     let audioCtx = null;
 
-    const seenNotifKeys = new Set();
-    const seenRegKeys = new Set();
-    const seenNidKeys = new Set();
-    const seenOrderStageKeys = new Set();
+    const seenNotifs = new Set();
+    const seenRegs = new Set();
+    const seenNids = new Set();
+    const seenOrders = new Set();
 
-    function getLiveState() {
+    function getAppState() {
         if (typeof state !== 'undefined' && state && typeof state === 'object') {
             window.state = state;
             return state;
@@ -9653,56 +9651,56 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         return (window.state && typeof window.state === 'object') ? window.state : null;
     }
 
-    function getFirestoreDoc() {
+    function getDocRef() {
         try {
             if (window.firebase && window.firebase.apps && window.firebase.apps.length && typeof window.firebase.firestore === 'function') {
-                return window.firebase.firestore().collection(LIVE_COLLECTION).doc(LIVE_DOC_ID);
+                return window.firebase.firestore().collection(LIVE_COL).doc(LIVE_DOC);
             }
         } catch (_) {}
         return null;
     }
 
-    function checkIsAdmin() {
+    function hasAdminAccess() {
         try {
             if (typeof isAdminActive === 'function' && isAdminActive()) return true;
         } catch (_) {}
-        const st = getLiveState();
+        const st = getAppState();
         const u = st && st.currentUser;
-        return Boolean(u && (u.role === 'admin' || u.isAdmin === true) && st.adminUnlocked === true);
+        return Boolean(st && st.adminUnlocked === true && u && (u.role === 'admin' || u.isAdmin === true));
     }
 
-    function playTungSound() {
+    function playTung() {
         try {
-            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-            if (!AudioContextClass) return;
-            if (!audioCtx) audioCtx = new AudioContextClass();
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            if (!audioCtx) audioCtx = new AC();
             if (audioCtx.state === 'suspended') {
                 audioCtx.resume().catch(function () {});
             }
-            const now = audioCtx.currentTime;
+            const t = audioCtx.currentTime;
             const osc = audioCtx.createOscillator();
             const gain = audioCtx.createGain();
             osc.type = 'sine';
-            osc.frequency.setValueAtTime(920, now);
-            osc.frequency.exponentialRampToValueAtTime(1380, now + 0.08);
-            osc.frequency.exponentialRampToValueAtTime(680, now + 0.22);
+            osc.frequency.setValueAtTime(920, t);
+            osc.frequency.exponentialRampToValueAtTime(1380, t + 0.08);
+            osc.frequency.exponentialRampToValueAtTime(680, t + 0.22);
 
-            gain.gain.setValueAtTime(0.001, now);
-            gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
-            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
+            gain.gain.setValueAtTime(0.001, t);
+            gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.26);
 
             osc.connect(gain);
             gain.connect(audioCtx.destination);
-            osc.start(now);
-            osc.stop(now + 0.27);
+            osc.start(t);
+            osc.stop(t + 0.27);
         } catch (_) {}
     }
 
     ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
         document.addEventListener(ev, function () {
             try {
-                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-                if (AudioContextClass && !audioCtx) audioCtx = new AudioContextClass();
+                const AC = window.AudioContext || window.webkitAudioContext;
+                if (AC && !audioCtx) audioCtx = new AC();
                 if (audioCtx && audioCtx.state === 'suspended') {
                     audioCtx.resume().catch(function () {});
                 }
@@ -9710,287 +9708,193 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
         }, { passive: true });
     });
 
-    function notifyUserLive(title, message, withSound) {
-        if (withSound) playTungSound();
+    function notifyLive(title, body, soundOn) {
+        if (soundOn) playTung();
         if (typeof window.triggerMobileFrontNotification === 'function') {
-            window.triggerMobileFrontNotification(title, message, 'alert');
+            window.triggerMobileFrontNotification(title, body, 'alert');
         } else if (typeof window.showToast === 'function') {
-            window.showToast(title + ': ' + message, '🔔');
+            window.showToast(title + ': ' + body, '🔔');
         }
     }
 
-    function mergeArrayByKey(primaryArr, secondaryArr, keyFn) {
-        const map = new Map();
-        const a = Array.isArray(secondaryArr) ? secondaryArr : [];
-        const b = Array.isArray(primaryArr) ? primaryArr : [];
-        a.concat(b).forEach(function (item, idx) {
-            if (!item || typeof item !== 'object') return;
-            const k = keyFn(item, idx);
-            if (!k) return;
-            const prev = map.get(k);
-            map.set(k, prev ? Object.assign({}, prev, item) : JSON.parse(JSON.stringify(item)));
-        });
-        return Array.from(map.values());
-    }
-
-    // অ্যাপ আপডেট বা রিলোডেও যেন কোনো ডেটা/হিস্ট্রি না মুছে
-    function preserveDurableState(st) {
-        if (!st || typeof st !== 'object') return;
+    function saveLatestLocal(st) {
+        if (!st) return;
         try {
-            const savedDelP = JSON.parse(localStorage.getItem(DURABLE_DEL_P_KEY) || '[]');
-            const savedDelU = JSON.parse(localStorage.getItem(DURABLE_DEL_U_KEY) || '[]');
-            const savedHist = JSON.parse(localStorage.getItem(DURABLE_HIST_KEY) || '[]');
-            const savedBackupRaw = localStorage.getItem(DURABLE_STATE_KEY);
-            const savedBackup = savedBackupRaw ? JSON.parse(savedBackupRaw) : null;
-
-            const delPSet = new Set(
-                ([]).concat(st.deletedProductIds || [], savedDelP || []).map(String).filter(Boolean)
-            );
-            const delUSet = new Set(
-                ([]).concat(st.deletedAccountIds || [], savedDelU || []).map(String).filter(Boolean)
-            );
-
-            st.deletedProductIds = Array.from(delPSet);
-            st.deletedAccountIds = Array.from(delUSet);
-
-            if (savedBackup && typeof savedBackup === 'object') {
-                if ((!Array.isArray(st.accounts) || st.accounts.length === 0) && Array.isArray(savedBackup.accounts)) {
-                    st.accounts = savedBackup.accounts;
-                }
-                if ((!Array.isArray(st.products) || st.products.length === 0) && Array.isArray(savedBackup.products)) {
-                    st.products = savedBackup.products;
-                }
-                if ((!Array.isArray(st.orders) || st.orders.length === 0) && Array.isArray(savedBackup.orders)) {
-                    st.orders = savedBackup.orders;
-                }
-                if ((!Array.isArray(st.ads) || st.ads.length === 0) && Array.isArray(savedBackup.ads)) {
-                    st.ads = savedBackup.ads;
-                }
-                if (!st.settings && savedBackup.settings) {
-                    st.settings = savedBackup.settings;
-                }
-            }
-
-            if (Array.isArray(st.products)) {
-                st.products = st.products.filter(function (p) { return p && !delPSet.has(String(p.id)); });
-            }
-            if (Array.isArray(st.cart)) {
-                st.cart = st.cart.filter(function (c) { return c && !delPSet.has(String(c.productId)); });
-            }
-            if (Array.isArray(st.accounts)) {
-                st.accounts = st.accounts.filter(function (a) { return a && !delUSet.has(String(a.id)); });
-            }
-
-            st.history = mergeArrayByKey(st.history, savedHist, function (h, idx) {
-                return h.id ? String(h.id) : [h.category || '', h.title || '', h.actor || '', h.timestamp || idx].join('|');
-            });
-
-            localStorage.setItem(DURABLE_DEL_P_KEY, JSON.stringify(st.deletedProductIds));
-            localStorage.setItem(DURABLE_DEL_U_KEY, JSON.stringify(st.deletedAccountIds));
-            localStorage.setItem(DURABLE_HIST_KEY, JSON.stringify(st.history));
-
-            const snapshotCopy = JSON.parse(JSON.stringify(st));
-            delete snapshotCopy.currentUser;
-            delete snapshotCopy.adminUnlocked;
-            localStorage.setItem(DURABLE_STATE_KEY, JSON.stringify(snapshotCopy));
+            const copy = JSON.parse(JSON.stringify(st));
+            delete copy.currentUser;
+            delete copy.adminUnlocked;
+            localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(copy));
         } catch (_) {}
     }
 
-    // যার নোটিফিকেশন তার কাছেই "টুং" সাউন্ডসহ পাঠানো (অ্যাডমিনেরটা শুধু অ্যাডমিনের কাছে)
-    function dispatchTargetedLiveAlerts(st, isInitial) {
-        if (!st || typeof st !== 'object') return;
-        const amAdmin = checkIsAdmin();
+    function fireTargetedNotifications(st, isFirstLoad) {
+        if (!st) return;
+        const amAdmin = hasAdminAccess();
         const me = st.currentUser || null;
 
-        const regs = Array.isArray(st.registrationRequests) ? st.registrationRequests : [];
-        regs.forEach(function (r, i) {
+        (Array.isArray(st.registrationRequests) ? st.registrationRequests : []).forEach(function (r, idx) {
             if (!r || r.status !== 'pending') return;
-            const k = String(r.id || r.phone || ('reg_' + i));
-            if (!seenRegKeys.has(k)) {
-                seenRegKeys.add(k);
-                if (!isInitial && amAdmin) {
-                    notifyUserLive(
+            const key = String(r.id || r.phone || ('r_' + idx));
+            if (!seenRegs.has(key)) {
+                seenRegs.add(key);
+                if (!isFirstLoad && amAdmin) {
+                    notifyLive(
                         'নতুন অ্যাকাউন্ট আবেদন এসেছে',
-                        (r.name || 'ব্যবহারকারী') + ' (' + (r.phone || '') + ') অনুমোদনের অনুরোধ পাঠিয়েছেন।',
+                        (r.name || 'ব্যবহারকারী') + ' (' + (r.phone || '') + ') আবেদন করেছেন।',
                         true
                     );
                 }
             }
         });
 
-        const nids = (Array.isArray(st.accounts) ? st.accounts : []).filter(function (a) {
+        (Array.isArray(st.accounts) ? st.accounts : []).filter(function (a) {
             return a && a.role !== 'admin' && a.nidStatus === 'pending';
-        });
-        nids.forEach(function (a, i) {
-            const k = String(a.id || a.nidNumber || ('nid_' + i));
-            if (!seenNidKeys.has(k)) {
-                seenNidKeys.add(k);
-                if (!isInitial && amAdmin) {
-                    notifyUserLive(
+        }).forEach(function (a, idx) {
+            const key = String(a.id || a.nidNumber || ('n_' + idx));
+            if (!seenNids.has(key)) {
+                seenNids.add(key);
+                if (!isFirstLoad && amAdmin) {
+                    notifyLive(
                         'নতুন এনআইডি ভেরিফিকেশন জমা',
-                        (a.name || 'ব্যবহারকারী') + ' এনআইডি (' + (a.nidNumber || '') + ') যাচাইয়ের জন্য পাঠিয়েছেন।',
+                        (a.name || 'ব্যবহারকারী') + ' এনআইডি (' + (a.nidNumber || '') + ') পাঠিয়েছেন।',
                         true
                     );
                 }
             }
         });
 
-        const orders = Array.isArray(st.orders) ? st.orders : [];
-        orders.forEach(function (o, i) {
+        (Array.isArray(st.orders) ? st.orders : []).forEach(function (o, idx) {
             if (!o) return;
-            const stageKey = String(o.id || ('ord_' + i)) + '::' + String(o.status || '');
-            if (!seenOrderStageKeys.has(stageKey)) {
-                seenOrderStageKeys.add(stageKey);
-                if (!isInitial && me) {
+            const key = String(o.id || ('o_' + idx)) + ':' + String(o.status || '');
+            if (!seenOrders.has(key)) {
+                seenOrders.add(key);
+                if (!isFirstLoad && me) {
                     const isBuyer = o.buyerId && me.id === o.buyerId;
                     const isSeller = (o.targetSellerId && me.id === o.targetSellerId) ||
                         (Array.isArray(o.sellerIds) && o.sellerIds.includes(me.id));
                     const isRider = o.riderId && me.id === o.riderId;
-                    const isCandidateRider = me.role === 'rider' && (o.status === 'all_sellers_confirmed' || o.status === 'ready_for_rider');
-
-                    if (isBuyer || isSeller || isRider || isCandidateRider) {
-                        notifyUserLive(
-                            'অর্ডার আপডেট (' + (o.id || '') + ')',
-                            'স্ট্যাটাস: ' + (o.status || 'আপডেট হয়েছে'),
-                            true
-                        );
+                    const isWaitingRider = me.role === 'rider' && (o.status === 'all_sellers_confirmed' || o.status === 'ready_for_rider');
+                    if (isBuyer || isSeller || isRider || isWaitingRider) {
+                        notifyLive('অর্ডার আপডেট (' + (o.id || '') + ')', 'অবস্থা: ' + (o.status || 'আপডেট হয়েছে'), true);
                     }
                 }
             }
         });
 
-        const notifs = Array.isArray(st.notifications) ? st.notifications : [];
-        notifs.slice(0, 25).forEach(function (n, idx) {
+        (Array.isArray(st.notifications) ? st.notifications : []).slice(0, 25).forEach(function (n, idx) {
             if (!n || typeof n !== 'object') return;
-            const k = String(n.id || [n.title || '', n.message || n.body || '', n.time || idx].join('|'));
-            if (seenNotifKeys.has(k)) return;
+            const key = String(n.id || [n.title || '', n.message || n.body || '', n.time || idx].join('|'));
+            if (seenNotifs.has(key)) return;
 
-            const isForAdmin = Boolean(n.forAdmin || n.targetRole === 'admin' || n.adminOnly);
-            const targetIds = Array.isArray(n.userIds) ? n.userIds : [];
+            const adminOnly = Boolean(n.forAdmin || n.targetRole === 'admin' || n.adminOnly);
+            const userList = Array.isArray(n.userIds) ? n.userIds : [];
             const singleTarget = n.targetUserId || n.userId || n.toUserId || null;
 
-            let deliverToMe = false;
-            if (isForAdmin) {
-                deliverToMe = amAdmin;
+            let forMe = false;
+            if (adminOnly) {
+                forMe = amAdmin;
             } else if (me) {
-                if (targetIds.length > 0) {
-                    deliverToMe = targetIds.includes(me.id);
-                } else if (singleTarget) {
-                    deliverToMe = singleTarget === me.id;
-                } else if (n.targetRole) {
-                    deliverToMe = me.role === n.targetRole;
-                }
+                if (userList.length > 0) forMe = userList.includes(me.id);
+                else if (singleTarget) forMe = singleTarget === me.id;
+                else if (n.targetRole) forMe = me.role === n.targetRole;
             }
 
-            if (deliverToMe) {
-                seenNotifKeys.add(k);
-                notifyUserLive(
+            if (forMe) {
+                seenNotifs.add(key);
+                notifyLive(
                     n.title || 'নতুন লাইভ নোটিফিকেশন',
-                    n.message || n.body || n.text || 'নতুন একটি কার্যক্রম আপডেট হয়েছে।',
+                    n.message || n.body || n.text || 'নতুন আপডেট এসেছে।',
                     true
                 );
             }
         });
     }
 
-    // ক্লাউডে লাইভ স্টেট পুশ (কারো ডিভাইসের currentUser বা adminUnlocked ওভাররাইট ছাড়া)
-    function pushLiveStateToCloud(force) {
-        const docRef = getFirestoreDoc();
-        const st = getLiveState();
-        if (!docRef || !st || applyingRemoteUpdate) return;
+    function pushNowToLiveCloud() {
+        const ref = getDocRef();
+        const st = getAppState();
+        if (!ref || !st || isRemoteApplying) return;
 
-        preserveDurableState(st);
+        saveLatestLocal(st);
+        const nowTs = Date.now();
+        lastLocalMutationAt = nowTs;
+        lastRemoteUpdatedAt = nowTs;
 
         try {
             const payload = JSON.parse(JSON.stringify(st));
             delete payload.currentUser;
             delete payload.adminUnlocked;
 
-            const sig = JSON.stringify({
-                accounts: payload.accounts || [],
-                registrationRequests: payload.registrationRequests || [],
-                products: payload.products || [],
-                deletedProductIds: payload.deletedProductIds || [],
-                deletedAccountIds: payload.deletedAccountIds || [],
-                orders: payload.orders || [],
-                notifications: payload.notifications || [],
-                ads: payload.ads || [],
-                packageRequests: payload.packageRequests || [],
-                withdrawalRequests: payload.withdrawalRequests || [],
-                passwordResetRequests: payload.passwordResetRequests || [],
-                riderDeposits: payload.riderDeposits || [],
-                history: payload.history || [],
-                settings: payload.settings || {},
-                liveLocations: payload.liveLocations || {}
-            });
-
-            if (!force && sig === lastCloudSig) return;
-            lastCloudSig = sig;
-
-            docRef.set({
+            ref.set({
                 payload: payload,
-                updatedAt: Date.now(),
-                updatedBy: (st.currentUser && st.currentUser.id) || 'guest'
-            }, { merge: true }).catch(function () {});
+                updatedAt: nowTs,
+                updatedBy: (st.currentUser && st.currentUser.id) || 'user'
+            }).catch(function (err) {
+                console.warn('Firestore live push failed:', err);
+            });
+        } catch (err) {
+            console.warn('Serialize failed:', err);
+        }
+    }
+
+    function schedulePushToLiveCloud() {
+        if (isRemoteApplying) return;
+        clearTimeout(pushTimeout);
+        pushTimeout = setTimeout(pushNowToLiveCloud, 70);
+    }
+
+    function refreshAllScreens() {
+        try {
+            if (typeof window.syncAllUI === 'function') {
+                window.syncAllUI();
+            } else {
+                if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid();
+                if (typeof window.renderOrdersTab === 'function') window.renderOrdersTab();
+                if (typeof window.renderDedicatedWalletTab === 'function') window.renderDedicatedWalletTab();
+                if (typeof window.renderAccountTab === 'function') window.renderAccountTab();
+            }
+        } catch (_) {}
+
+        try {
+            if (hasAdminAccess() && typeof window.renderAdminPanel === 'function') {
+                window.renderAdminPanel();
+            }
         } catch (_) {}
     }
 
-    function scheduleLiveCloudPush() {
-        if (applyingRemoteUpdate) return;
-        clearTimeout(cloudPushTimer);
-        cloudPushTimer = setTimeout(function () {
-            pushLiveStateToCloud(false);
-        }, 100);
-    }
+    function applyCloudPayload(remote, remoteTs) {
+        const st = getAppState();
+        if (!st || !remote || typeof remote !== 'object') return;
 
-    // ক্লাউড থেকে রিয়েল-টাইম আপডেট গ্রহণ ও লোকাল সেশন সুরক্ষিত রাখা
-    function applyRemoteLiveSnapshot(remotePayload) {
-        const st = getLiveState();
-        if (!st || !remotePayload || typeof remotePayload !== 'object') return;
-
-        applyingRemoteUpdate = true;
+        isRemoteApplying = true;
         try {
             const keepUser = st.currentUser ? JSON.parse(JSON.stringify(st.currentUser)) : null;
             const keepAdminUnlocked = Boolean(st.adminUnlocked);
 
-            const delP = new Set((remotePayload.deletedProductIds || st.deletedProductIds || []).map(String));
-            const delU = new Set((remotePayload.deletedAccountIds || st.deletedAccountIds || []).map(String));
-
-            Object.keys(remotePayload).forEach(function (key) {
-                if (key !== 'currentUser' && key !== 'adminUnlocked') {
-                    st[key] = remotePayload[key];
+            Object.keys(remote).forEach(function (k) {
+                if (k !== 'currentUser' && k !== 'adminUnlocked') {
+                    st[k] = remote[k];
                 }
             });
 
-            st.deletedProductIds = Array.from(delP);
-            st.deletedAccountIds = Array.from(delU);
-
-            if (Array.isArray(st.products)) {
-                st.products = st.products.filter(function (p) { return p && !delP.has(String(p.id)); });
-            }
-            if (Array.isArray(st.accounts)) {
-                st.accounts = st.accounts.filter(function (a) { return a && !delU.has(String(a.id)); });
-            }
-
-            // নিজের অ্যাকাউন্টের অনুমোদন/এনআইডি/ওয়ালেট স্ট্যাটাস সিঙ্ক হবে, কিন্তু রোল/অ্যাডমিন এক্সেস জোর করে বদলাবে না
             if (keepUser && Array.isArray(st.accounts)) {
-                const freshAcc = st.accounts.find(function (a) {
+                const matched = st.accounts.find(function (a) {
                     return a && ((keepUser.id && a.id === keepUser.id) || (keepUser.phone && a.phone === keepUser.phone));
                 });
-                if (freshAcc) {
-                    const mergedUser = Object.assign({}, keepUser, {
-                        approved: freshAcc.approved,
-                        nidStatus: freshAcc.nidStatus,
-                        nidNumber: freshAcc.nidNumber,
-                        nidImg: freshAcc.nidImg,
-                        package: freshAcc.package,
-                        wallet: freshAcc.wallet,
-                        lastWithdrawAt: freshAcc.lastWithdrawAt
+                if (matched) {
+                    const updatedMe = Object.assign({}, keepUser, {
+                        approved: matched.approved,
+                        nidStatus: matched.nidStatus,
+                        nidNumber: matched.nidNumber,
+                        nidImg: matched.nidImg,
+                        package: matched.package,
+                        wallet: matched.wallet,
+                        lastWithdrawAt: matched.lastWithdrawAt
                     });
                     if (keepUser.role !== 'admin') {
-                        mergedUser.role = keepUser.role;
+                        updatedMe.role = keepUser.role;
                     }
-                    st.currentUser = mergedUser;
+                    st.currentUser = updatedMe;
                 } else {
                     st.currentUser = keepUser;
                 }
@@ -9999,97 +9903,102 @@ if (typeof _origRenderProductsGridForVisibility === 'function') {
             }
 
             st.adminUnlocked = keepAdminUnlocked;
-            preserveDurableState(st);
+            if (remoteTs) lastRemoteUpdatedAt = remoteTs;
+            saveLatestLocal(st);
 
-            try {
-                if (typeof window.syncAllUI === 'function') {
-                    window.syncAllUI();
-                } else {
-                    if (typeof window.renderProductsGrid === 'function') window.renderProductsGrid();
-                    if (typeof window.renderOrdersTab === 'function') window.renderOrdersTab();
-                    if (typeof window.renderDedicatedWalletTab === 'function') window.renderDedicatedWalletTab();
-                    if (typeof window.renderAccountTab === 'function') window.renderAccountTab();
-                }
-            } catch (_) {}
-
-            try {
-                if (checkIsAdmin() && typeof window.renderAdminPanel === 'function') {
-                    window.renderAdminPanel();
-                }
-            } catch (_) {}
-
-            dispatchTargetedLiveAlerts(st, !initialSnapshotDone);
-            initialSnapshotDone = true;
+            refreshAllScreens();
+            fireTargetedNotifications(st, !initialLoadDone);
+            initialLoadDone = true;
         } finally {
             setTimeout(function () {
-                applyingRemoteUpdate = false;
-            }, 120);
+                isRemoteApplying = false;
+            }, 100);
         }
     }
 
-    function initLiveRealtimeEngine() {
-        const st = getLiveState();
+    function hookSaveStateForLiveSync() {
+        if (typeof window.saveState === 'function' && !window.saveState._isLiveHooked) {
+            const origSave = window.saveState;
+            const hookedSave = function () {
+                const st = getAppState();
+                if (st) saveLatestLocal(st);
+                const res = origSave.apply(this, arguments);
+                const stAfter = getAppState();
+                if (stAfter) saveLatestLocal(stAfter);
+                if (!isRemoteApplying) {
+                    schedulePushToLiveCloud();
+                }
+                return res;
+            };
+            hookedSave._isLiveHooked = true;
+            window.saveState = hookedSave;
+        }
+    }
+
+    function startLiveSync() {
+        hookSaveStateForLiveSync();
+        const st = getAppState();
         if (st) {
-            preserveDurableState(st);
-            dispatchTargetedLiveAlerts(st, true);
+            saveLatestLocal(st);
+            fireTargetedNotifications(st, true);
         }
 
-        const docRef = getFirestoreDoc();
-        if (!docRef) return;
+        const ref = getDocRef();
+        if (!ref) return;
 
-        docRef.onSnapshot(function (snap) {
-            if (!snap.exists || applyingRemoteUpdate) return;
+        ref.onSnapshot(function (snap) {
+            if (!snap.exists || isRemoteApplying) return;
             const data = snap.data() || {};
+            const ts = Number(data.updatedAt || 0);
+            if (ts && ts <= lastRemoteUpdatedAt) return;
+            if (Date.now() - lastLocalMutationAt < 120 && ts < lastLocalMutationAt) return;
+
             if (data.payload && typeof data.payload === 'object') {
-                applyRemoteLiveSnapshot(data.payload);
+                applyCloudPayload(data.payload, ts);
             }
         }, function (err) {
-            console.warn('Live snapshot error:', err);
+            console.warn('Live listener error:', err);
         });
 
-        docRef.get().then(function (snap) {
-            if (!snap.exists && getLiveState()) {
-                pushLiveStateToCloud(true);
-            } else if (snap.exists) {
-                const d = snap.data() || {};
-                if (d.payload && !initialSnapshotDone) {
-                    applyRemoteLiveSnapshot(d.payload);
+        ref.get().then(function (snap) {
+            const curSt = getAppState();
+            if (!curSt) return;
+            if (snap.exists) {
+                const data = snap.data() || {};
+                const ts = Number(data.updatedAt || 0);
+                if (data.payload && ts >= lastRemoteUpdatedAt) {
+                    applyCloudPayload(data.payload, ts);
                 }
+            } else {
+                pushNowToLiveCloud();
             }
         }).catch(function () {});
     }
 
-    // saveState ও loadState-এর সাথে নিরাপদ সংযোগ
-    if (typeof window.saveState === 'function') {
-        const origSave = window.saveState;
-        window.saveState = function () {
-            const st = getLiveState();
-            if (st) preserveDurableState(st);
-            const res = origSave.apply(this, arguments);
-            if (st) preserveDurableState(st);
-            scheduleLiveCloudPush();
-            return res;
-        };
-    }
+    document.addEventListener('click', function () {
+        hookSaveStateForLiveSync();
+        if (!isRemoteApplying) {
+            setTimeout(schedulePushToLiveCloud, 90);
+        }
+    }, true);
 
-    if (typeof window.loadState === 'function') {
-        const origLoad = window.loadState;
-        window.loadState = function () {
-            const res = origLoad.apply(this, arguments);
-            const st = getLiveState();
-            if (st) preserveDurableState(st);
-            return res;
-        };
-    }
+    document.addEventListener('submit', function () {
+        hookSaveStateForLiveSync();
+        if (!isRemoteApplying) {
+            setTimeout(schedulePushToLiveCloud, 110);
+        }
+    }, true);
 
-    document.addEventListener('DOMContentLoaded', function () {
-        setTimeout(initLiveRealtimeEngine, 250);
-    });
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(initLiveRealtimeEngine, 250);
+        setTimeout(startLiveSync, 200);
+    } else {
+        document.addEventListener('DOMContentLoaded', function () {
+            setTimeout(startLiveSync, 200);
+        });
     }
 })();
 </script>
+
 
 
 
